@@ -2542,8 +2542,8 @@ class VideoProcessor(QObject):
 
             # 2. Start video (metronome) AFTER a delay
             # This is to allow ffplay time to initialize.
-            AUDIO_STARTUP_LATENCY_MS = self.main_window.control.get(
-                "LiveSoundDelaySlider"
+            AUDIO_STARTUP_LATENCY_MS = (
+                self.main_window.control.get("LiveSoundDelayDecimalSlider") * 1000
             )
             print(
                 f"[INFO] Waiting {AUDIO_STARTUP_LATENCY_MS}ms for audio to initialize..."
