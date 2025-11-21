@@ -931,17 +931,16 @@ class ModelsProcessor(QtCore.QObject):
             unloaded = False
 
             # Handle ONNX models (for CUDA, CPU, and TensorRT providers)
-            if (
-                model_name_to_unload
-                and self.models.get(model_name_to_unload) is not None
-            ):
-                print(f"[INFO] Unloading ONNX model: {model_name_to_unload}")
-                # Use pop to remove the key and get the object
-                model_instance = self.models.pop(model_name_to_unload, None)
-                if model_instance:
+            if model_name_to_unload and model_name_to_unload in self.models:
+                model_instance = self.models[model_name_to_unload]
+
+                if model_instance is not None:
+                    print(f"[INFO] Unloading ONNX model: {model_name_to_unload}")
                     # Explicitly delete the object to trigger its __del__ method
                     del model_instance
-                unloaded = True
+                    unloaded = True
+
+                self.models[model_name_to_unload] = None
 
             # Handle TRT-Engine models (for the dedicated .trt file provider)
             if (

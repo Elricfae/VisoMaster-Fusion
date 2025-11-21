@@ -14,6 +14,10 @@ import threading
 import subprocess
 import json
 
+import torch
+from PIL import Image
+from skimage import transform as trans
+
 lock = threading.Lock()
 
 # --- Global Scope ---
@@ -493,15 +497,19 @@ def get_scaled_resolution(
 
 def get_video_rotation(media_path: str) -> int:
     """
-    Uses ffprobe to get the video rotation metadata tag.
-    Checks both 'side_data_list' and 'tags'.
-    Returns 0 if no rotation tag is found or ffprobe fails.
+    Uses ffprobe to retrieve the video rotation metadata using a recursive search strategy.
+    This is robust against variations in JSON structure (tags vs side_data_list).
+    Returns 0, 90, 180, or 270.
     """
-    # Log when the check starts
     print(
         f"[INFO] Checking video rotation metadata for: {os.path.basename(media_path)}..."
     )
+
+    if not is_ffmpeg_in_path():
+        return 0
+
     try:
+        # We select only the first video stream (v:0) to avoid getting audio rotation metadata
         cmd = [
             "ffprobe",
             "-v",
@@ -521,74 +529,67 @@ def get_video_rotation(media_path: str) -> int:
             text=True,
             encoding="utf-8",
         )
-        stdout_data, stderr_data = process.communicate(timeout=10)  # 10s timeout
+        stdout_data, stderr_data = process.communicate(timeout=10)
 
         if process.returncode != 0:
-            print(f"[WARN] ffprobe failed for {media_path}. Error: {stderr_data}")
+            print(f"[ERROR] ffprobe failed. Error: {stderr_data}")
             return 0
 
         data = json.loads(stdout_data)
 
-        if "streams" in data and data["streams"]:
-            stream = data["streams"][0]
-            rotation_angle = 0  # Initialize rotation
+        # --- Helper: Recursive Search ---
+        def find_rotation_value(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k.lower() == "rotation":
+                        return v
+                    # Recursive call for nested dicts
+                    result = find_rotation_value(v)
+                    if result is not None:
+                        return result
+            elif isinstance(obj, list):
+                for item in obj:
+                    # Recursive call for items in lists
+                    result = find_rotation_value(item)
+                    if result is not None:
+                        return result
+            return None
 
-            # --- MODIFICATION: Check 'side_data_list' first (more robust) ---
-            if "side_data_list" in stream:
-                for side_data in stream["side_data_list"]:  # Variable is 'side_data'
-                    if "rotation" in side_data:
-                        try:
-                            # Use int(float(...)) to handle potential float values like "90.0"
-                            # --- CORRECTION: Changed 'side_Data' to 'side_data' ---
-                            rotation_angle = int(float(side_data["rotation"]))
-                            break  # Found it
-                        except (ValueError, TypeError, KeyError):
-                            pass  # Not a valid number
+        # Search for 'rotation' anywhere in the JSON
+        rotation_raw = find_rotation_value(data)
 
-            # --- FALLBACK: Check 'tags' (original logic) ---
-            if rotation_angle == 0 and "tags" in stream and "rotate" in stream["tags"]:
-                try:
-                    rotation_angle = int(float(stream["tags"]["rotate"]))
-                except (ValueError, TypeError):
-                    rotation_angle = 0  # Reset if tag is invalid
+        if rotation_raw is not None:
+            try:
+                rotation_angle = int(float(rotation_raw))
 
-            # --- Process the found rotation angle ---
-            if rotation_angle != 0:
-                # Handle negative rotations (e.g., -90)
+                # Normalize angle
                 if rotation_angle < 0:
                     rotation_angle += 360
+                rotation_angle = rotation_angle % 360
 
-                # Normalize common angles (90, 180, 270)
+                # Align to standard angles
                 if 85 <= rotation_angle <= 95:
                     print("[INFO] Detected video rotation: 90°")
                     return 90
-                if 175 <= rotation_angle <= 185:
+                elif 175 <= rotation_angle <= 185:
                     print("[INFO] Detected video rotation: 180°")
                     return 180
-                if 265 <= rotation_angle <= 275:
+                elif 265 <= rotation_angle <= 275:
                     print("[INFO] Detected video rotation: 270°")
                     return 270
+                elif rotation_angle != 0:
+                    print(
+                        f"[INFO] Found rotation '{rotation_angle}°', but ignoring non-standard angle."
+                    )
 
-                print(
-                    f"[INFO] Found rotation tag, but angle '{rotation_angle}' is not standard. Ignoring."
-                )
-            else:
-                print(
-                    "[WARN] Ffprobe ran, but no 'rotate' tag was found in stream (checked tags and side_data_list)."
-                )
+            except (ValueError, TypeError):
+                pass  # Found the key but value wasn't a number
 
-        else:
-            print("[WARN] Ffprobe ran, but no video streams were found.")
-
-    except FileNotFoundError:
-        print(
-            "[ERROR] Ffprobe command not found. Cannot check video rotation. Please ensure ffprobe is in your system's PATH."
-        )
     except Exception as e:
-        print(f"[ERROR] Could not get video rotation metadata. Error: {e}")
+        print(f"[ERROR] Video rotation check failed: {e}")
 
     print("[INFO] No rotation metadata applied (returning 0).")
-    return 0  # Default to 0
+    return 0
 
 
 def _apply_frame_rotation(frame: np.ndarray, angle: int) -> np.ndarray:
@@ -798,3 +799,178 @@ def get_dir_of_file(file_path):
     if file_path:
         return os.path.dirname(file_path)
     return os.path.curdir
+
+
+def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
+    """
+    Converts a PyTorch tensor to a PIL Image.
+    """
+    if tensor.dim() == 4:
+        tensor = tensor.squeeze(0)
+    if tensor.dim() == 3 and tensor.shape[0] == 1:
+        tensor = tensor.repeat(3, 1, 1)
+    if tensor.dtype == torch.float32 or tensor.dtype == torch.float64:
+        tensor = (tensor * 255).clamp(0, 255).byte()
+    tensor = tensor.permute(1, 2, 0).cpu().numpy()
+    return Image.fromarray(tensor)
+
+
+def keypoints_adjustments(kps_5: np.ndarray, parameters: dict) -> np.ndarray:
+    """
+    Applies manual adjustments (scale, position) to the 5 facial keypoints.
+    """
+    kps_5_adj = kps_5.copy()
+    # Change the ref points
+    if parameters["FaceAdjEnableToggle"]:
+        kps_5_adj[:, 0] += parameters["KpsXSlider"]
+        kps_5_adj[:, 1] += parameters["KpsYSlider"]
+        kps_5_adj[:, 0] -= 255
+        kps_5_adj[:, 0] *= 1 + parameters["KpsScaleSlider"] / 100.0
+        kps_5_adj[:, 0] += 255
+        kps_5_adj[:, 1] -= 255
+        kps_5_adj[:, 1] *= 1 + parameters["KpsScaleSlider"] / 100.0
+        kps_5_adj[:, 1] += 255
+
+    # Face Landmarks
+    if parameters["LandmarksPositionAdjEnableToggle"]:
+        kps_5_adj[0][0] += parameters["EyeLeftXAmountSlider"]
+        kps_5_adj[0][1] += parameters["EyeLeftYAmountSlider"]
+        kps_5_adj[1][0] += parameters["EyeRightXAmountSlider"]
+        kps_5_adj[1][1] += parameters["EyeRightYAmountSlider"]
+        kps_5_adj[2][0] += parameters["NoseXAmountSlider"]
+        kps_5_adj[2][1] += parameters["NoseYAmountSlider"]
+        kps_5_adj[3][0] += parameters["MouthLeftXAmountSlider"]
+        kps_5_adj[3][1] += parameters["MouthLeftYAmountSlider"]
+        kps_5_adj[4][0] += parameters["MouthRightXAmountSlider"]
+        kps_5_adj[4][1] += parameters["MouthRightYAmountSlider"]
+    return kps_5_adj
+
+
+def get_grid_for_pasting(
+    tform_target_to_source: trans.SimilarityTransform,
+    target_h: int,
+    target_w: int,
+    source_h: int,
+    source_w: int,
+    device: torch.device,
+):
+    """
+    Generates a sampling grid for torch.nn.functional.grid_sample to warp content
+    back to the target frame coordinates.
+    """
+    # tform_target_to_source: maps points from target (e.g. full image) to source (e.g. 512x512 face)
+    grid_y, grid_x = torch.meshgrid(
+        torch.arange(target_h, device=device, dtype=torch.float32),
+        torch.arange(target_w, device=device, dtype=torch.float32),
+        indexing="ij",
+    )
+    target_grid_yx_pixels = torch.stack((grid_y, grid_x), dim=2).unsqueeze(
+        0
+    )  # 1xTargetHxTargetWx2 (Y,X order)
+
+    # Convert target grid pixel coordinates to homogeneous coordinates (X,Y,1)
+    target_grid_xy_flat_pixels = target_grid_yx_pixels[..., [1, 0]].reshape(
+        -1, 2
+    )  # (N,2) in XY
+    ones = torch.ones(
+        target_grid_xy_flat_pixels.shape[0], 1, device=device, dtype=torch.float32
+    )
+    homogeneous_target_grid_xy_pixels = torch.cat(
+        (target_grid_xy_flat_pixels, ones), dim=1
+    )  # (N,3)
+
+    # Transformation matrix from tform_target_to_source (2x3)
+    M_target_to_source = torch.tensor(
+        tform_target_to_source.params[0:2, :], dtype=torch.float32, device=device
+    )
+
+    # Transform target grid to source coordinates (pixels)
+    # (N,3) @ (3,2) -> (N,2) in XY order
+    source_coords_xy_flat_pixels = torch.matmul(
+        homogeneous_target_grid_xy_pixels, M_target_to_source.T
+    )
+
+    # Reshape to grid format 1xTargetHxTargetWx2
+    source_coords_xy_grid_pixels = source_coords_xy_flat_pixels.view(
+        1, target_h, target_w, 2
+    )
+
+    # Normalize source coordinates for grid_sample (expects XY order, range [-1,1])
+    source_grid_normalized_xy = torch.empty_like(source_coords_xy_grid_pixels)
+    # Normalize X coordinates
+    source_grid_normalized_xy[..., 0] = (
+        source_coords_xy_grid_pixels[..., 0] / (source_w - 1.0)
+    ) * 2.0 - 1.0
+    # Normalize Y coordinates
+    source_grid_normalized_xy[..., 1] = (
+        source_coords_xy_grid_pixels[..., 1] / (source_h - 1.0)
+    ) * 2.0 - 1.0
+
+    # target_grid_yx is not strictly needed by grid_sample but returned for completeness if ever useful
+    return target_grid_yx_pixels, source_grid_normalized_xy
+
+
+def draw_bounding_boxes_on_detected_faces(
+    img: torch.Tensor, det_faces_data: list
+) -> torch.Tensor:
+    """
+    Draws bounding boxes on the image tensor based on detection data.
+    """
+    for i, fface in enumerate(det_faces_data):
+        color_rgb = [0, 255, 0]
+        bbox = fface["bbox"]
+        x_min, y_min, x_max, y_max = map(int, bbox)
+
+        # Ensure bounding box is within the image dimensions
+        _, h, w = img.shape
+        x_min, y_min = max(0, x_min), max(0, y_min)
+        x_max, y_max = min(w - 1, x_max), min(h - 1, y_max)
+
+        # Dynamically compute thickness based on the image resolution
+        max_dimension = max(img.shape[1], img.shape[2])
+        thickness = max(4, max_dimension // 400)
+
+        color_tensor_c11 = torch.tensor(
+            color_rgb, dtype=img.dtype, device=img.device
+        ).view(-1, 1, 1)
+
+        img[:, y_min : y_min + thickness, x_min : x_max + 1] = color_tensor_c11.expand(
+            -1, thickness, x_max - x_min + 1
+        )
+        img[:, y_max - thickness + 1 : y_max + 1, x_min : x_max + 1] = (
+            color_tensor_c11.expand(-1, thickness, x_max - x_min + 1)
+        )
+        img[:, y_min : y_max + 1, x_min : x_min + thickness] = color_tensor_c11.expand(
+            -1, y_max - y_min + 1, thickness
+        )
+        img[:, y_min : y_max + 1, x_max - thickness + 1 : x_max + 1] = (
+            color_tensor_c11.expand(-1, y_max - y_min + 1, thickness)
+        )
+    return img
+
+
+def paint_landmarks_on_image(img: torch.Tensor, landmarks_data: list) -> torch.Tensor:
+    """
+    Draws landmarks on the image tensor.
+    landmarks_data: List of dicts {'kps': np.ndarray, 'color': tuple}
+    """
+    img_out_hwc = img.clone()
+    p = 2
+
+    for item in landmarks_data:
+        keypoints = item["kps"]
+        kcolor = item["color"]
+        if keypoints is not None:
+            for kpoint in keypoints:
+                kx, ky = int(kpoint[0]), int(kpoint[1])
+                for i_offset in range(-p // 2, p // 2 + 1):
+                    for j_offset in range(-p // 2, p // 2 + 1):
+                        final_y, final_x = ky + i_offset, kx + j_offset
+                        if (
+                            0 <= final_y < img_out_hwc.shape[0]
+                            and 0 <= final_x < img_out_hwc.shape[1]
+                        ):
+                            img_out_hwc[final_y, final_x] = torch.tensor(
+                                kcolor, device=img.device, dtype=img.dtype
+                            )
+    return img_out_hwc

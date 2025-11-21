@@ -4,7 +4,6 @@ import threading
 import queue
 import math
 from math import floor, ceil
-from PIL import Image
 from app.ui.widgets import widget_components
 import torch
 from skimage import transform as trans
@@ -21,9 +20,18 @@ import torch.nn.functional as F
 
 from app.processors.utils import faceutil
 import app.ui.widgets.actions.common_actions as common_widget_actions
-from app.helpers.miscellaneous import ParametersDict, get_scaling_transforms
+from app.helpers.miscellaneous import (
+    ParametersDict,
+    get_scaling_transforms,
+    draw_bounding_boxes_on_detected_faces,
+    paint_landmarks_on_image,
+    keypoints_adjustments,
+    get_grid_for_pasting,
+)
 from app.helpers.vr_utils import EquirectangularConverter, PerspectiveConverter
 from app.helpers.typing_helper import ParametersTypes
+from app.processors.frame_enhancers import FrameEnhancers
+from app.processors.frame_edits import FrameEdits
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -64,6 +72,10 @@ class FrameWorker(threading.Thread):
         self.main_window = main_window
         self.models_processor = main_window.models_processor
         self.video_processor = main_window.video_processor
+
+        # Initialize Helpers
+        self.frame_enhancers = FrameEnhancers(self.models_processor)
+        self.frame_edits = FrameEdits(self.models_processor)
 
         # Mode-specific args
         self.frame_queue = frame_queue  # This is now the TASK queue
@@ -111,6 +123,11 @@ class FrameWorker(threading.Thread):
             self.interpolation_expression_faceeditor_back,
             self.interpolation_block_shift,
         ) = get_scaling_transforms(control_params)
+
+        # Pass relevant transforms to FrameEdits
+        self.frame_edits.set_transforms(
+            self.t256_face, self.interpolation_expression_faceeditor_back
+        )
 
     def run(self):
         """
@@ -281,21 +298,9 @@ class FrameWorker(threading.Thread):
                     self.frame_number, pixmap, self.frame
                 )
 
-            # --- ALL QUEUE LOGIC IS REMOVED FROM HERE ---
-
         except Exception as e:
             print(f"[ERROR] Error in {self.name} (frame {self.frame_number}): {e}")
             traceback.print_exc()
-
-    def tensor_to_pil(self, tensor):
-        if tensor.dim() == 4:
-            tensor = tensor.squeeze(0)
-        if tensor.dim() == 3 and tensor.shape[0] == 1:
-            tensor = tensor.repeat(3, 1, 1)
-        if tensor.dtype == torch.float32 or tensor.dtype == torch.float64:
-            tensor = (tensor * 255).clamp(0, 255).byte()
-        tensor = tensor.permute(1, 2, 0).cpu().numpy()
-        return Image.fromarray(tensor)
 
     def _apply_denoiser_pass(
         self,
@@ -345,11 +350,6 @@ class FrameWorker(threading.Thread):
         ):
             face_specific_params_dict = self.parameters.get(target_id, {})
 
-            # --- START FIX ---
-            # The original code incorrectly tried: dict(self.main_window.default_parameters)
-            # This does not correctly get the default parameter dictionary
-            # from the ParametersDict object.
-            # The correct attribute is .data, which holds the actual dictionary.
             default_params_dict = (
                 dict(self.main_window.default_parameters.data)
                 if isinstance(self.main_window.default_parameters, ParametersDict)
@@ -357,7 +357,6 @@ class FrameWorker(threading.Thread):
                     self.main_window.default_parameters.data
                 )  # Assume .data is always the target
             )
-            # --- END FIX ---
 
             current_params_pd = ParametersDict(
                 dict(face_specific_params_dict), cast(dict, default_params_dict)
@@ -522,7 +521,7 @@ class FrameWorker(threading.Thread):
                 perspective_crop_torch_rgb_uint8.shape[1],
                 perspective_crop_torch_rgb_uint8.shape[2],
             )
-            _, source_grid_normalized_xy_persp = self.get_grid_for_pasting(
+            _, source_grid_normalized_xy_persp = get_grid_for_pasting(
                 tform_persp_to_512template,
                 crop_h,
                 crop_w,
@@ -578,11 +577,13 @@ class FrameWorker(threading.Thread):
                     kps_all_for_editor_on_crop is not None
                     and kps_all_for_editor_on_crop.size > 0
                 ):
-                    processed_crop_torch_rgb_uint8 = self.swap_edit_face_core(
-                        processed_crop_torch_rgb_uint8,
-                        processed_crop_torch_rgb_uint8,
-                        parameters_for_face.data,
-                        control_global,
+                    processed_crop_torch_rgb_uint8 = (
+                        self.frame_edits.swap_edit_face_core(
+                            processed_crop_torch_rgb_uint8,
+                            processed_crop_torch_rgb_uint8,
+                            parameters_for_face.data,
+                            control_global,
+                        )
                     )
                     if any(
                         parameters_for_face.get(f, False)
@@ -594,7 +595,7 @@ class FrameWorker(threading.Thread):
                         )
                     ):  # , 'EyesMakeupEnableToggle')):
                         processed_crop_torch_rgb_uint8 = (
-                            self.swap_edit_face_core_makeup(
+                            self.frame_edits.swap_edit_face_core_makeup(
                                 processed_crop_torch_rgb_uint8,
                                 kps_all_on_crop_param,
                                 parameters_for_face.data,
@@ -608,553 +609,37 @@ class FrameWorker(threading.Thread):
         # Check 1: At the very beginning
         if stop_event.is_set():
             return self.frame[..., ::-1]  # Return original BGR frame
+
         self.set_scaling_transforms(control)
         img_numpy_rgb_uint8 = self.frame
-        swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked()
-        edit_button_is_checked_global = self.main_window.editFacesButton.isChecked()
+
+        # Prepare the base tensor
         processed_tensor_rgb_uint8 = (
             torch.from_numpy(img_numpy_rgb_uint8)
             .to(self.models_processor.device)
             .permute(2, 0, 1)
         )
-        det_faces_data_for_display = []
 
+        # --- ROUTING LOGIC ---
         if control.get("VR180ModeEnableToggle", False):
-            # --- VR180 Path ---
-            original_equirect_tensor_for_vr = processed_tensor_rgb_uint8.clone()
-            equirect_converter = EquirectangularConverter(
-                img_numpy_rgb_uint8, device=self.models_processor.device
+            processed_tensor_rgb_uint8 = self._process_frame_vr180(
+                processed_tensor_rgb_uint8, img_numpy_rgb_uint8, control, stop_event
             )
-            # The run_detect function returns (bboxes, kps_5, kps_all). We don't get scores here.
-            bboxes_eq_np, _, _ = self.models_processor.run_detect(
-                original_equirect_tensor_for_vr,
-                control["DetectorModelSelection"],
-                max_num=control["MaxFacesToDetectSlider"],
-                score=control["DetectorScoreSlider"] / 100.0,
-                input_size=(512, 512),
-                use_landmark_detection=False,
-                landmark_detect_mode=control["LandmarkDetectModelSelection"],
-                landmark_score=control["LandmarkDetectScoreSlider"] / 100.0,
-                from_points=False,
-                rotation_angles=[0]
-                if not control["AutoRotationToggle"]
-                else [0, 90, 180, 270],
-            )
-
-            # Ensure bboxes is a numpy array. If no faces are found, it becomes an empty array.
-            if not isinstance(bboxes_eq_np, np.ndarray):
-                bboxes_eq_np = np.array(bboxes_eq_np)
-
-            # Filtering Block: De-duplicate nearby bounding boxes.
-            # This logic only runs if there are multiple boxes to compare.
-            if bboxes_eq_np.ndim == 2 and bboxes_eq_np.shape[0] > 1:
-                initial_box_count = bboxes_eq_np.shape[0]
-
-                # Use BBox area as a proxy for detection quality/importance.
-                areas = (bboxes_eq_np[:, 2] - bboxes_eq_np[:, 0]) * (
-                    bboxes_eq_np[:, 3] - bboxes_eq_np[:, 1]
-                )
-
-                # Sort indices by area, largest first. This is our confidence proxy.
-                sorted_indices = np.argsort(areas)[::-1]
-
-                # Calculate centers and widths for distance comparison.
-                centers_x = (bboxes_eq_np[:, 0] + bboxes_eq_np[:, 2]) / 2.0
-                centers_y = (bboxes_eq_np[:, 1] + bboxes_eq_np[:, 3]) / 2.0
-                widths = bboxes_eq_np[:, 2] - bboxes_eq_np[:, 0]
-
-                indices_to_keep = []
-                # This will track which ORIGINAL indices are suppressed.
-                suppressed_indices = np.zeros(initial_box_count, dtype=bool)
-
-                # Iterate through detections, from highest score (area) to lowest.
-                for i in range(initial_box_count):
-                    # Get the original index of the current highest-scoring detection.
-                    idx1 = sorted_indices[i]
-
-                    # If this detection has already been suppressed by a closer, higher-scoring one, skip it.
-                    if suppressed_indices[idx1]:
-                        continue
-
-                    # This is the best detection in its local area, so we keep it.
-                    indices_to_keep.append(idx1)
-
-                    # Now, suppress all other detections that are too close to this one.
-                    for j in range(initial_box_count):
-                        if idx1 == j or suppressed_indices[j]:
-                            continue
-
-                        dist_x = centers_x[idx1] - centers_x[j]
-                        dist_y = centers_y[idx1] - centers_y[j]
-                        distance = np.sqrt(dist_x**2 + dist_y**2)
-
-                        # Threshold is based on the width of the box we are keeping (the higher-scoring one).
-                        threshold = widths[idx1] * 0.5
-
-                        if distance < threshold:
-                            suppressed_indices[j] = True
-
-                # Apply the filter to get the final list of bounding boxes.
-                bboxes_eq_np = bboxes_eq_np[indices_to_keep]
-
-            processed_perspective_crops_details = {}
-            analyzed_faces_for_vr = []
-            # This loop now iterates over the correctly de-duplicated bounding boxes.
-            for bbox_eq_single in bboxes_eq_np:
-                # Check 2: Inside VR face loop
-                if stop_event.is_set():
-                    break
-
-                theta, phi = equirect_converter.calculate_theta_phi_from_bbox(
-                    bbox_eq_single
-                )
-                original_eye_side = (
-                    "L"
-                    if (bbox_eq_single[0] + bbox_eq_single[2]) / 2
-                    < equirect_converter.width / 2
-                    else "R"
-                )
-                angular_width_deg = (
-                    (bbox_eq_single[2] - bbox_eq_single[0])
-                    / equirect_converter.width
-                    * 360.0
-                )
-                angular_height_deg = (
-                    (bbox_eq_single[3] - bbox_eq_single[1])
-                    / equirect_converter.height
-                    * 180.0
-                )
-                dynamic_fov_for_crop = np.clip(
-                    max(angular_width_deg, angular_height_deg)
-                    * self.VR_DYNAMIC_FOV_PADDING_FACTOR,
-                    15.0,
-                    100.0,
-                )
-                face_crop_tensor = equirect_converter.get_perspective_crop(
-                    dynamic_fov_for_crop,
-                    theta,
-                    phi,
-                    self.VR_PERSPECTIVE_RENDER_SIZE,
-                    self.VR_PERSPECTIVE_RENDER_SIZE,
-                )
-                if face_crop_tensor is None or face_crop_tensor.numel() == 0:
-                    continue
-
-                # 1. Get the landmark model selected in the UI from the 'control' dictionary.
-                landmark_model_from_ui = control["LandmarkDetectModelSelection"]
-
-                # 2. Create a "dummy" bounding box that covers the central 95% of the crop.
-                #    This assumes the face is well-centered by the dewarping process.
-                crop_size = self.VR_PERSPECTIVE_RENDER_SIZE
-                padding = int(crop_size * 0.025)  # 2.5% padding on each side
-                dummy_bbox_on_crop = np.array(
-                    [padding, padding, crop_size - padding, crop_size - padding]
-                )
-
-                # 3. Directly call the landmark detector, skipping the redundant face detector.
-                #    We pass the 'dummy_bbox_on_crop' to tell the landmark detector where to look.
-                kpss_5_crop_list, kpss_crop_list, _ = (
-                    self.models_processor.run_detect_landmark(
-                        img=face_crop_tensor,
-                        bbox=dummy_bbox_on_crop,
-                        det_kpss=[],  # Not needed since we're providing a bounding box
-                        detect_mode=landmark_model_from_ui,  # <-- Use the model selected in the UI
-                        score=control["LandmarkDetectScoreSlider"] / 100.0,
-                        from_points=False,  # We are using a bbox, not a set of points
-                    )
-                )
-
-                # 4. The landmark detector returns lists; we extract the first (and only) result.
-                kpss_5_crop = [kpss_5_crop_list] if len(kpss_5_crop_list) > 0 else []
-                kpss_crop = [kpss_crop_list] if len(kpss_crop_list) > 0 else []
-
-                if not (
-                    isinstance(kpss_5_crop, np.ndarray)
-                    and kpss_5_crop.shape[0] > 0
-                    or isinstance(kpss_5_crop, list)
-                    and len(kpss_5_crop) > 0
-                ):
-                    del face_crop_tensor
-                    continue
-
-                kps_on_crop = kpss_5_crop[0]
-                kps_all_on_crop = (
-                    kpss_crop[0]
-                    if isinstance(kpss_crop, np.ndarray) and kpss_crop.shape[0] > 0
-                    else None
-                )
-                face_emb_crop, _ = self.models_processor.run_recognize_direct(
-                    face_crop_tensor,
-                    kps_on_crop,
-                    control["SimilarityTypeSelection"],
-                    control["RecognitionModelSelection"],
-                )
-                best_target_button_vr, best_params_for_target_vr, _ = (
-                    self._find_best_target_match(face_emb_crop, control)
-                )
-
-                if best_target_button_vr:
-                    denoiser_on = (
-                        control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
-                        or control.get("DenoiserAfterFirstRestorerToggle", False)
-                        or control.get("DenoiserAfterRestorersToggle", False)
-                    )
-                    if (
-                        denoiser_on
-                        and best_target_button_vr.assigned_kv_map is None
-                        and best_target_button_vr.assigned_input_faces
-                    ):
-                        best_target_button_vr.calculate_assigned_input_embedding()
-
-                    analyzed_faces_for_vr.append(
-                        {
-                            "theta": theta,
-                            "phi": phi,
-                            "original_eye_side": original_eye_side,
-                            "face_crop_tensor": face_crop_tensor,
-                            "kps_on_crop": kps_on_crop,
-                            "kps_all_on_crop": kps_all_on_crop,
-                            "target_button": best_target_button_vr,
-                            "params": best_params_for_target_vr,
-                            "fov_used_for_crop": dynamic_fov_for_crop,
-                        }
-                    )
-                else:
-                    del face_crop_tensor
-
-            for item_data in analyzed_faces_for_vr:
-                processed_crop_for_stitching = (
-                    self._process_single_vr_perspective_crop_multi(
-                        item_data["face_crop_tensor"],
-                        item_data["target_button"],
-                        item_data["params"],
-                        control,
-                        kps_5_on_crop_param=item_data["kps_on_crop"],
-                        kps_all_on_crop_param=item_data["kps_all_on_crop"],
-                        swap_button_is_checked_global=swap_button_is_checked_global,
-                        edit_button_is_checked_global=edit_button_is_checked_global,
-                        eye_side_for_debug=item_data["original_eye_side"],
-                        kv_map_for_swap=item_data["target_button"].assigned_kv_map,
-                    )
-                    if swap_button_is_checked_global or edit_button_is_checked_global
-                    else item_data["face_crop_tensor"]
-                )
-
-                processed_perspective_crops_details[
-                    f"{item_data['original_eye_side']}_{item_data['theta']}_{item_data['phi']}"
-                ] = {
-                    "tensor_rgb_uint8": processed_crop_for_stitching,
-                    "theta": item_data["theta"],
-                    "phi": item_data["phi"],
-                    "fov_used_for_crop": item_data["fov_used_for_crop"],
-                }
-                del item_data["face_crop_tensor"]
-
-            final_equirect_torch_cxhxw_rgb_uint8 = (
-                original_equirect_tensor_for_vr.clone()
-            )
-            p2e_converter = PerspectiveConverter(
-                img_numpy_rgb_uint8, device=self.models_processor.device
-            )
-            for eye_side, data in processed_perspective_crops_details.items():
-                p2e_converter.stitch_single_perspective(
-                    target_equirect_torch_cxhxw_rgb_uint8=final_equirect_torch_cxhxw_rgb_uint8,
-                    processed_crop_torch_cxhxw_rgb_uint8=data["tensor_rgb_uint8"],
-                    theta=data["theta"],
-                    phi=data["phi"],
-                    fov=data["fov_used_for_crop"],
-                    is_left_eye=("L" in eye_side.split("_")[0]),
-                )
-            processed_tensor_rgb_uint8 = final_equirect_torch_cxhxw_rgb_uint8
-            del (
-                equirect_converter,
-                p2e_converter,
-                original_equirect_tensor_for_vr,
-                processed_perspective_crops_details,
-                analyzed_faces_for_vr,
-            )
-            torch.cuda.empty_cache()
         else:
-            # --- Standard Path ---
-            img = processed_tensor_rgb_uint8
-            img_x, img_y = img.size(2), img.size(1)
-            scale_applied = False
-            if img_x < 512 or img_y < 512:
-                if img_x <= img_y:
-                    new_h, new_w = int(512 * img_y / img_x), 512
-                else:
-                    new_h, new_w = 512, int(512 * img_x / img_y)
-                img = v2.Resize((new_h, new_w), antialias=False)(img)
-                scale_applied = True
-
-            if control["ManualRotationEnableToggle"]:
-                img = v2.functional.rotate(
-                    img,
-                    angle=control["ManualRotationAngleSlider"],
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    expand=True,
-                )
-
-            use_landmark, landmark_mode, from_points = (
-                control["LandmarkDetectToggle"],
-                control["LandmarkDetectModelSelection"],
-                control["DetectFromPointsToggle"],
-            )
-            if edit_button_is_checked_global:
-                use_landmark, landmark_mode, from_points = True, "203", True
-
-            bboxes, kpss_5, kpss = self.models_processor.run_detect(
-                img,
-                control["DetectorModelSelection"],
-                max_num=control["MaxFacesToDetectSlider"],
-                score=control["DetectorScoreSlider"] / 100.0,
-                input_size=(512, 512),
-                use_landmark_detection=use_landmark,
-                landmark_detect_mode=landmark_mode,
-                landmark_score=control["LandmarkDetectScoreSlider"] / 100.0,
-                from_points=from_points,
-                rotation_angles=[0]
-                if not control["AutoRotationToggle"]
-                else [0, 90, 180, 270],
+            processed_tensor_rgb_uint8 = self._process_frame_standard(
+                processed_tensor_rgb_uint8, control, stop_event
             )
 
-            if (
-                isinstance(kpss_5, np.ndarray)
-                and kpss_5.shape[0] > 0
-                or isinstance(kpss_5, list)
-                and len(kpss_5) > 0
-            ):
-                # if kpss_5.shape[0] > 0:
-                for i in range(len(kpss_5)):
-                    face_emb, _ = self.models_processor.run_recognize_direct(
-                        img,
-                        kpss_5[i],
-                        control["SimilarityTypeSelection"],
-                        control["RecognitionModelSelection"],
-                    )
-                    det_faces_data_for_display.append(
-                        {
-                            "kps_5": kpss_5[i],
-                            "kps_all": kpss[i],
-                            "embedding": face_emb,
-                            "bbox": bboxes[i],
-                            "original_face": None,
-                            "swap_mask": None,
-                        }
-                    )
-
-            if det_faces_data_for_display:
-                if control["SwapOnlyBestMatchEnableToggle"]:
-                    for _, target_face in self.main_window.target_faces.items():
-                        # Check 3: Inside standard face loop
-                        if stop_event.is_set():
-                            break
-
-                        params = ParametersDict(
-                            self.parameters[target_face.face_id],
-                            self.main_window.default_parameters.data,
-                        )
-
-                        best_fface, best_score = None, -1.0
-                        for fface in det_faces_data_for_display:
-                            # benutze die EXISTIERENDE Matching-Logik
-                            tgt, tgt_params, score = self._find_best_target_match(
-                                fface["embedding"], control
-                            )
-                            # nur wenn dieser Face-Detection auch wirklich zu genau diesem target_face gehört:
-                            if tgt and tgt.face_id == target_face.face_id:
-                                if (
-                                    score >= tgt_params["SimilarityThresholdSlider"]
-                                    and score > best_score
-                                ):
-                                    best_score = score
-                                    best_fface = fface
-
-                        # Check if a best face was found AND if swap or edit is actually enabled
-                        if best_fface is not None and (
-                            swap_button_is_checked_global
-                            or edit_button_is_checked_global
-                        ):
-                            denoiser_on = (
-                                control.get(
-                                    "DenoiserUNetEnableBeforeRestorersToggle", False
-                                )
-                                or control.get(
-                                    "DenoiserAfterFirstRestorerToggle", False
-                                )
-                                or control.get("DenoiserAfterRestorersToggle", False)
-                            )
-                            if (
-                                denoiser_on
-                                and target_face.assigned_kv_map is None
-                                and target_face.assigned_input_faces
-                            ):
-                                target_face.calculate_assigned_input_embedding()
-
-                            s_e = None
-                            arcface_model = self.models_processor.get_arcface_model(
-                                params["SwapModelSelection"]
-                            )
-                            if (
-                                swap_button_is_checked_global
-                                and params["SwapModelSelection"] != "DeepFaceLive (DFM)"
-                            ):
-                                s_e = target_face.assigned_input_embedding.get(
-                                    arcface_model
-                                )
-                                if s_e is not None and np.isnan(s_e).any():
-                                    s_e = None
-
-                            kv_map_for_swap = target_face.assigned_kv_map
-                            (
-                                img,
-                                best_fface["original_face"],
-                                best_fface["swap_mask"],
-                            ) = self.swap_core(
-                                img,
-                                best_fface["kps_5"],
-                                best_fface["kps_all"],
-                                s_e=s_e,
-                                t_e=target_face.get_embedding(arcface_model),
-                                parameters=params,
-                                control=control,
-                                dfm_model_name=params["DFMModelSelection"],
-                                kv_map=kv_map_for_swap,
-                            )
-                            if edit_button_is_checked_global and any(
-                                params[f]
-                                for f in (
-                                    "FaceMakeupEnableToggle",
-                                    "HairMakeupEnableToggle",
-                                    "EyeBrowsMakeupEnableToggle",
-                                    "LipsMakeupEnableToggle",
-                                )
-                            ):
-                                img = self.swap_edit_face_core_makeup(
-                                    img, best_fface["kps_all"], params.data, control
-                                )
-                else:
-                    for fface in det_faces_data_for_display:
-                        # Check 4: Inside standard face loop (else branch)
-                        if stop_event.is_set():
-                            break
-
-                        best_target, params, _ = self._find_best_target_match(
-                            fface["embedding"], control
-                        )
-                        # Check if a target was matched AND if swap or edit is actually enabled
-                        if best_target and (
-                            swap_button_is_checked_global
-                            or edit_button_is_checked_global
-                        ):
-                            denoiser_on = (
-                                control.get(
-                                    "DenoiserUNetEnableBeforeRestorersToggle", False
-                                )
-                                or control.get(
-                                    "DenoiserAfterFirstRestorerToggle", False
-                                )
-                                or control.get("DenoiserAfterRestorersToggle", False)
-                            )
-                            if (
-                                denoiser_on
-                                and best_target.assigned_kv_map is None
-                                and best_target.assigned_input_faces
-                            ):
-                                best_target.calculate_assigned_input_embedding()
-
-                            fface["kps_5"] = self.keypoints_adjustments(
-                                fface["kps_5"], params
-                            )
-                            arcface_model = self.models_processor.get_arcface_model(
-                                params["SwapModelSelection"]
-                            )
-                            s_e = None
-                            if (
-                                swap_button_is_checked_global
-                                and params["SwapModelSelection"] != "DeepFaceLive (DFM)"
-                            ):
-                                s_e = best_target.assigned_input_embedding.get(
-                                    arcface_model
-                                )
-                                if s_e is not None and np.isnan(s_e).any():
-                                    s_e = None
-
-                            kv_map_for_swap = best_target.assigned_kv_map
-                            img, fface["original_face"], fface["swap_mask"] = (
-                                self.swap_core(
-                                    img,
-                                    fface["kps_5"],
-                                    fface["kps_all"],
-                                    s_e=s_e,
-                                    t_e=best_target.get_embedding(arcface_model),
-                                    parameters=params,
-                                    control=control,
-                                    dfm_model_name=params["DFMModelSelection"],
-                                    kv_map=kv_map_for_swap,
-                                )
-                            )
-                            if edit_button_is_checked_global and any(
-                                params[f]
-                                for f in (
-                                    "FaceMakeupEnableToggle",
-                                    "HairMakeupEnableToggle",
-                                    "EyeBrowsMakeupEnableToggle",
-                                    "LipsMakeupEnableToggle",
-                                )
-                            ):
-                                img = self.swap_edit_face_core_makeup(
-                                    img, fface["kps_all"], params.data, control
-                                )
-
-            if control["ManualRotationEnableToggle"]:
-                img = v2.functional.rotate(
-                    img,
-                    angle=-control["ManualRotationAngleSlider"],
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    expand=True,
-                )
-            if scale_applied:
-                img = v2.Resize(
-                    (img_y, img_x),
-                    interpolation=self.interpolation_scaleback,
-                    antialias=False,
-                )(img)
-            processed_tensor_rgb_uint8 = img
-
-        # --- Common Post-Processing ---
-        if control["ShowAllDetectedFacesBBoxToggle"] and det_faces_data_for_display:
-            processed_tensor_rgb_uint8 = self.draw_bounding_boxes_on_detected_faces(
-                processed_tensor_rgb_uint8, det_faces_data_for_display, control
-            )
-
-        if (
-            control["ShowLandmarksEnableToggle"]
-            and det_faces_data_for_display
-            and not control.get("VR180ModeEnableToggle", False)
-        ):
-            temp_permuted = processed_tensor_rgb_uint8.permute(1, 2, 0)
-            temp_permuted = self.paint_face_landmarks(
-                temp_permuted, det_faces_data_for_display, control
-            )
-            processed_tensor_rgb_uint8 = temp_permuted.permute(2, 0, 1)
-
+        # --- Common Post-Processing (Enhancers, etc.) ---
+        # We check compare mode to skip global enhancement if needed.
         compare_mode_active = self.is_view_face_mask or self.is_view_face_compare
-        if (
-            compare_mode_active
-            and det_faces_data_for_display
-            and not control.get("VR180ModeEnableToggle", False)
-        ):
-            processed_tensor_rgb_uint8 = self.get_compare_faces_image(
-                processed_tensor_rgb_uint8, det_faces_data_for_display, control
-            )
 
         if control["FrameEnhancerEnableToggle"] and not compare_mode_active:
             # Check 5: Before final heavy operation
             if stop_event.is_set():
-                return img_numpy_rgb_uint8[..., ::-1]  # Return original BGR frame
+                return img_numpy_rgb_uint8[..., ::-1]
 
-            processed_tensor_rgb_uint8 = self.enhance_core(
+            processed_tensor_rgb_uint8 = self.frame_enhancers.enhance_core(
                 processed_tensor_rgb_uint8, control=control
             )
 
@@ -1166,106 +651,560 @@ class FrameWorker(threading.Thread):
 
         return final_img_np_rgb_uint8[..., ::-1]
 
-    def keypoints_adjustments(self, kps_5: np.ndarray, parameters: dict) -> np.ndarray:
-        kps_5_adj = kps_5.copy()
-        # Change the ref points
-        if parameters["FaceAdjEnableToggle"]:
-            kps_5_adj[:, 0] += parameters["KpsXSlider"]
-            kps_5_adj[:, 1] += parameters["KpsYSlider"]
-            kps_5_adj[:, 0] -= 255
-            kps_5_adj[:, 0] *= 1 + parameters["KpsScaleSlider"] / 100.0
-            kps_5_adj[:, 0] += 255
-            kps_5_adj[:, 1] -= 255
-            kps_5_adj[:, 1] *= 1 + parameters["KpsScaleSlider"] / 100.0
-            kps_5_adj[:, 1] += 255
-
-        # Face Landmarks
-        if parameters["LandmarksPositionAdjEnableToggle"]:
-            kps_5_adj[0][0] += parameters["EyeLeftXAmountSlider"]
-            kps_5_adj[0][1] += parameters["EyeLeftYAmountSlider"]
-            kps_5_adj[1][0] += parameters["EyeRightXAmountSlider"]
-            kps_5_adj[1][1] += parameters["EyeRightYAmountSlider"]
-            kps_5_adj[2][0] += parameters["NoseXAmountSlider"]
-            kps_5_adj[2][1] += parameters["NoseYAmountSlider"]
-            kps_5_adj[3][0] += parameters["MouthLeftXAmountSlider"]
-            kps_5_adj[3][1] += parameters["MouthLeftYAmountSlider"]
-            kps_5_adj[4][0] += parameters["MouthRightXAmountSlider"]
-            kps_5_adj[4][1] += parameters["MouthRightYAmountSlider"]
-        return kps_5_adj
-
-    def paint_face_landmarks(
-        self, img: torch.Tensor, det_faces_data: list, control: dict
+    def _process_frame_vr180(
+        self,
+        original_equirect_tensor_for_vr: torch.Tensor,
+        img_numpy_rgb_uint8: np.ndarray,
+        control: dict,
+        stop_event: threading.Event,
     ) -> torch.Tensor:
-        img_out_hwc = img.clone()
-        p = 2
+        """
+        Handles the specific logic for VR180/360 frames:
+        - Equirectangular detection
+        - Perspective cropping
+        - Processing per crop
+        - Stitching back
+        """
+        swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked()
+        edit_button_is_checked_global = self.main_window.editFacesButton.isChecked()
 
+        equirect_converter = EquirectangularConverter(
+            img_numpy_rgb_uint8, device=self.models_processor.device
+        )
+
+        # Detection on full equirectangular image
+        bboxes_eq_np, _, _ = self.models_processor.run_detect(
+            original_equirect_tensor_for_vr,
+            control["DetectorModelSelection"],
+            max_num=control["MaxFacesToDetectSlider"],
+            score=control["DetectorScoreSlider"] / 100.0,
+            input_size=(512, 512),
+            use_landmark_detection=False,  # VR usually detects faces first, then landmarks on crops
+            landmark_detect_mode=control["LandmarkDetectModelSelection"],
+            landmark_score=control["LandmarkDetectScoreSlider"] / 100.0,
+            from_points=False,
+            rotation_angles=[0]
+            if not control["AutoRotationToggle"]
+            else [0, 90, 180, 270],
+        )
+
+        if not isinstance(bboxes_eq_np, np.ndarray):
+            bboxes_eq_np = np.array(bboxes_eq_np)
+
+        # Filtering Block: De-duplicate nearby bounding boxes.
+        if bboxes_eq_np.ndim == 2 and bboxes_eq_np.shape[0] > 1:
+            initial_box_count = bboxes_eq_np.shape[0]
+            areas = (bboxes_eq_np[:, 2] - bboxes_eq_np[:, 0]) * (
+                bboxes_eq_np[:, 3] - bboxes_eq_np[:, 1]
+            )
+            sorted_indices = np.argsort(areas)[::-1]
+            centers_x = (bboxes_eq_np[:, 0] + bboxes_eq_np[:, 2]) / 2.0
+            centers_y = (bboxes_eq_np[:, 1] + bboxes_eq_np[:, 3]) / 2.0
+            widths = bboxes_eq_np[:, 2] - bboxes_eq_np[:, 0]
+            indices_to_keep = []
+            suppressed_indices = np.zeros(initial_box_count, dtype=bool)
+
+            for i in range(initial_box_count):
+                idx1 = sorted_indices[i]
+                if suppressed_indices[idx1]:
+                    continue
+                indices_to_keep.append(idx1)
+                for j in range(initial_box_count):
+                    if idx1 == j or suppressed_indices[j]:
+                        continue
+                    dist_x = centers_x[idx1] - centers_x[j]
+                    dist_y = centers_y[idx1] - centers_y[j]
+                    distance = np.sqrt(dist_x**2 + dist_y**2)
+                    if distance < widths[idx1] * 0.5:
+                        suppressed_indices[j] = True
+            bboxes_eq_np = bboxes_eq_np[indices_to_keep]
+
+        processed_perspective_crops_details = {}
+        analyzed_faces_for_vr = []
+
+        for bbox_eq_single in bboxes_eq_np:
+            if stop_event.is_set():
+                break
+
+            theta, phi = equirect_converter.calculate_theta_phi_from_bbox(
+                bbox_eq_single
+            )
+            original_eye_side = (
+                "L"
+                if (bbox_eq_single[0] + bbox_eq_single[2]) / 2
+                < equirect_converter.width / 2
+                else "R"
+            )
+            angular_width_deg = (
+                (bbox_eq_single[2] - bbox_eq_single[0])
+                / equirect_converter.width
+                * 360.0
+            )
+            angular_height_deg = (
+                (bbox_eq_single[3] - bbox_eq_single[1])
+                / equirect_converter.height
+                * 180.0
+            )
+
+            dynamic_fov_for_crop = np.clip(
+                max(angular_width_deg, angular_height_deg)
+                * self.VR_DYNAMIC_FOV_PADDING_FACTOR,
+                15.0,
+                100.0,
+            )
+
+            face_crop_tensor = equirect_converter.get_perspective_crop(
+                dynamic_fov_for_crop,
+                theta,
+                phi,
+                self.VR_PERSPECTIVE_RENDER_SIZE,
+                self.VR_PERSPECTIVE_RENDER_SIZE,
+            )
+            if face_crop_tensor is None or face_crop_tensor.numel() == 0:
+                continue
+
+            # Landmark detection on the crop
+            crop_size = self.VR_PERSPECTIVE_RENDER_SIZE
+            padding = int(crop_size * 0.025)
+            dummy_bbox_on_crop = np.array(
+                [padding, padding, crop_size - padding, crop_size - padding]
+            )
+
+            kpss_5_crop_list, kpss_crop_list, _ = (
+                self.models_processor.run_detect_landmark(
+                    img=face_crop_tensor,
+                    bbox=dummy_bbox_on_crop,
+                    det_kpss=[],
+                    detect_mode=control["LandmarkDetectModelSelection"],
+                    score=control["LandmarkDetectScoreSlider"] / 100.0,
+                    from_points=False,
+                )
+            )
+
+            kpss_5_crop = [kpss_5_crop_list] if len(kpss_5_crop_list) > 0 else []
+            kpss_crop = [kpss_crop_list] if len(kpss_crop_list) > 0 else []
+
+            if not (
+                isinstance(kpss_5_crop, np.ndarray)
+                and kpss_5_crop.shape[0] > 0
+                or isinstance(kpss_5_crop, list)
+                and len(kpss_5_crop) > 0
+            ):
+                del face_crop_tensor
+                continue
+
+            kps_on_crop = kpss_5_crop[0]
+            kps_all_on_crop = (
+                kpss_crop[0]
+                if isinstance(kpss_crop, np.ndarray) and kpss_crop.shape[0] > 0
+                else None
+            )
+
+            face_emb_crop, _ = self.models_processor.run_recognize_direct(
+                face_crop_tensor,
+                kps_on_crop,
+                control["SimilarityTypeSelection"],
+                control["RecognitionModelSelection"],
+            )
+
+            best_target_button_vr, best_params_for_target_vr, _ = (
+                self._find_best_target_match(face_emb_crop, control)
+            )
+
+            if best_target_button_vr:
+                denoiser_on = (
+                    control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
+                    or control.get("DenoiserAfterFirstRestorerToggle", False)
+                    or control.get("DenoiserAfterRestorersToggle", False)
+                )
+                if (
+                    denoiser_on
+                    and best_target_button_vr.assigned_kv_map is None
+                    and best_target_button_vr.assigned_input_faces
+                ):
+                    best_target_button_vr.calculate_assigned_input_embedding()
+
+                analyzed_faces_for_vr.append(
+                    {
+                        "theta": theta,
+                        "phi": phi,
+                        "original_eye_side": original_eye_side,
+                        "face_crop_tensor": face_crop_tensor,
+                        "kps_on_crop": kps_on_crop,
+                        "kps_all_on_crop": kps_all_on_crop,
+                        "target_button": best_target_button_vr,
+                        "params": best_params_for_target_vr,
+                        "fov_used_for_crop": dynamic_fov_for_crop,
+                    }
+                )
+            else:
+                del face_crop_tensor
+
+        # Process collected faces
+        for item_data in analyzed_faces_for_vr:
+            processed_crop_for_stitching = (
+                self._process_single_vr_perspective_crop_multi(
+                    item_data["face_crop_tensor"],
+                    item_data["target_button"],
+                    item_data["params"],
+                    control,
+                    kps_5_on_crop_param=item_data["kps_on_crop"],
+                    kps_all_on_crop_param=item_data["kps_all_on_crop"],
+                    swap_button_is_checked_global=swap_button_is_checked_global,
+                    edit_button_is_checked_global=edit_button_is_checked_global,
+                    eye_side_for_debug=item_data["original_eye_side"],
+                    kv_map_for_swap=item_data["target_button"].assigned_kv_map,
+                )
+                if swap_button_is_checked_global or edit_button_is_checked_global
+                else item_data["face_crop_tensor"]
+            )
+
+            processed_perspective_crops_details[
+                f"{item_data['original_eye_side']}_{item_data['theta']}_{item_data['phi']}"
+            ] = {
+                "tensor_rgb_uint8": processed_crop_for_stitching,
+                "theta": item_data["theta"],
+                "phi": item_data["phi"],
+                "fov_used_for_crop": item_data["fov_used_for_crop"],
+            }
+            del item_data["face_crop_tensor"]
+
+        # Stitch back
+        final_equirect_torch_cxhxw_rgb_uint8 = original_equirect_tensor_for_vr.clone()
+        p2e_converter = PerspectiveConverter(
+            img_numpy_rgb_uint8, device=self.models_processor.device
+        )
+
+        for eye_side, data in processed_perspective_crops_details.items():
+            p2e_converter.stitch_single_perspective(
+                target_equirect_torch_cxhxw_rgb_uint8=final_equirect_torch_cxhxw_rgb_uint8,
+                processed_crop_torch_cxhxw_rgb_uint8=data["tensor_rgb_uint8"],
+                theta=data["theta"],
+                phi=data["phi"],
+                fov=data["fov_used_for_crop"],
+                is_left_eye=("L" in eye_side.split("_")[0]),
+            )
+
+        processed_tensor_rgb_uint8 = final_equirect_torch_cxhxw_rgb_uint8
+
+        # Cleanup
+        del (
+            equirect_converter,
+            p2e_converter,
+            processed_perspective_crops_details,
+            analyzed_faces_for_vr,
+        )
+        torch.cuda.empty_cache()
+
+        return processed_tensor_rgb_uint8
+
+    def _process_frame_standard(
+        self,
+        processed_tensor_rgb_uint8: torch.Tensor,
+        control: dict,
+        stop_event: threading.Event,
+    ) -> torch.Tensor:
+        """
+        Handles the standard (flat) processing logic:
+        - Rotation
+        - Detection
+        - Swapping/Editing
+        - Overlays (BBox, Landmarks, Comparison)
+        """
+        swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked()
+        edit_button_is_checked_global = self.main_window.editFacesButton.isChecked()
+        det_faces_data_for_display = []
+
+        img = processed_tensor_rgb_uint8
+        img_x, img_y = img.size(2), img.size(1)
+        scale_applied = False
+
+        # Downscale for processing if too large (standard pipeline optimization)
+        if img_x < 512 or img_y < 512:
+            if img_x <= img_y:
+                new_h, new_w = int(512 * img_y / img_x), 512
+            else:
+                new_h, new_w = 512, int(512 * img_x / img_y)
+            img = v2.Resize((new_h, new_w), antialias=False)(img)
+            scale_applied = True
+
+        # Manual Rotation
+        if control["ManualRotationEnableToggle"]:
+            img = v2.functional.rotate(
+                img,
+                angle=control["ManualRotationAngleSlider"],
+                interpolation=v2.InterpolationMode.BILINEAR,
+                expand=True,
+            )
+
+        # Detection Setup
+        use_landmark, landmark_mode, from_points = (
+            control["LandmarkDetectToggle"],
+            control["LandmarkDetectModelSelection"],
+            control["DetectFromPointsToggle"],
+        )
+        if edit_button_is_checked_global:
+            use_landmark, landmark_mode, from_points = True, "203", True
+
+        bboxes, kpss_5, kpss = self.models_processor.run_detect(
+            img,
+            control["DetectorModelSelection"],
+            max_num=control["MaxFacesToDetectSlider"],
+            score=control["DetectorScoreSlider"] / 100.0,
+            input_size=(512, 512),
+            use_landmark_detection=use_landmark,
+            landmark_detect_mode=landmark_mode,
+            landmark_score=control["LandmarkDetectScoreSlider"] / 100.0,
+            from_points=from_points,
+            rotation_angles=[0]
+            if not control["AutoRotationToggle"]
+            else [0, 90, 180, 270],
+        )
+
+        if (
+            isinstance(kpss_5, np.ndarray)
+            and kpss_5.shape[0] > 0
+            or isinstance(kpss_5, list)
+            and len(kpss_5) > 0
+        ):
+            for i in range(len(kpss_5)):
+                face_emb, _ = self.models_processor.run_recognize_direct(
+                    img,
+                    kpss_5[i],
+                    control["SimilarityTypeSelection"],
+                    control["RecognitionModelSelection"],
+                )
+                det_faces_data_for_display.append(
+                    {
+                        "kps_5": kpss_5[i],
+                        "kps_all": kpss[i],
+                        "embedding": face_emb,
+                        "bbox": bboxes[i],
+                        "original_face": None,
+                        "swap_mask": None,
+                    }
+                )
+
+        # Swapping / Editing Loop
+        if det_faces_data_for_display:
+            # --- Branch: Swap Only Best Match ---
+            if control["SwapOnlyBestMatchEnableToggle"]:
+                for _, target_face in self.main_window.target_faces.items():
+                    if stop_event.is_set():
+                        break
+
+                    params = ParametersDict(
+                        self.parameters[target_face.face_id],
+                        self.main_window.default_parameters.data,
+                    )
+                    best_fface, best_score = None, -1.0
+
+                    for fface in det_faces_data_for_display:
+                        tgt, tgt_params, score = self._find_best_target_match(
+                            fface["embedding"], control
+                        )
+                        if tgt and tgt.face_id == target_face.face_id:
+                            if (
+                                score >= tgt_params["SimilarityThresholdSlider"]
+                                and score > best_score
+                            ):
+                                best_score = score
+                                best_fface = fface
+
+                    if best_fface is not None and (
+                        swap_button_is_checked_global or edit_button_is_checked_global
+                    ):
+                        # (Logic for Denoise/Swap/Makeup matches original code)
+                        denoiser_on = (
+                            control.get(
+                                "DenoiserUNetEnableBeforeRestorersToggle", False
+                            )
+                            or control.get("DenoiserAfterFirstRestorerToggle", False)
+                            or control.get("DenoiserAfterRestorersToggle", False)
+                        )
+                        if (
+                            denoiser_on
+                            and target_face.assigned_kv_map is None
+                            and target_face.assigned_input_faces
+                        ):
+                            target_face.calculate_assigned_input_embedding()
+
+                        s_e = None
+                        arcface_model = self.models_processor.get_arcface_model(
+                            params["SwapModelSelection"]
+                        )
+                        if (
+                            swap_button_is_checked_global
+                            and params["SwapModelSelection"] != "DeepFaceLive (DFM)"
+                        ):
+                            s_e = target_face.assigned_input_embedding.get(
+                                arcface_model
+                            )
+                            if s_e is not None and np.isnan(s_e).any():
+                                s_e = None
+
+                        img, best_fface["original_face"], best_fface["swap_mask"] = (
+                            self.swap_core(
+                                img,
+                                best_fface["kps_5"],
+                                best_fface["kps_all"],
+                                s_e=s_e,
+                                t_e=target_face.get_embedding(arcface_model),
+                                parameters=params,
+                                control=control,
+                                dfm_model_name=params["DFMModelSelection"],
+                                kv_map=target_face.assigned_kv_map,
+                            )
+                        )
+                        if edit_button_is_checked_global and any(
+                            params[f]
+                            for f in (
+                                "FaceMakeupEnableToggle",
+                                "HairMakeupEnableToggle",
+                                "EyeBrowsMakeupEnableToggle",
+                                "LipsMakeupEnableToggle",
+                            )
+                        ):
+                            img = self.frame_edits.swap_edit_face_core_makeup(
+                                img, best_fface["kps_all"], params.data, control
+                            )
+
+            # --- Branch: Swap All Matches ---
+            else:
+                for fface in det_faces_data_for_display:
+                    if stop_event.is_set():
+                        break
+                    best_target, params, _ = self._find_best_target_match(
+                        fface["embedding"], control
+                    )
+
+                    if best_target and (
+                        swap_button_is_checked_global or edit_button_is_checked_global
+                    ):
+                        denoiser_on = (
+                            control.get(
+                                "DenoiserUNetEnableBeforeRestorersToggle", False
+                            )
+                            or control.get("DenoiserAfterFirstRestorerToggle", False)
+                            or control.get("DenoiserAfterRestorersToggle", False)
+                        )
+                        if (
+                            denoiser_on
+                            and best_target.assigned_kv_map is None
+                            and best_target.assigned_input_faces
+                        ):
+                            best_target.calculate_assigned_input_embedding()
+
+                        fface["kps_5"] = keypoints_adjustments(fface["kps_5"], params)
+                        arcface_model = self.models_processor.get_arcface_model(
+                            params["SwapModelSelection"]
+                        )
+                        s_e = None
+                        if (
+                            swap_button_is_checked_global
+                            and params["SwapModelSelection"] != "DeepFaceLive (DFM)"
+                        ):
+                            s_e = best_target.assigned_input_embedding.get(
+                                arcface_model
+                            )
+                            if s_e is not None and np.isnan(s_e).any():
+                                s_e = None
+
+                        img, fface["original_face"], fface["swap_mask"] = (
+                            self.swap_core(
+                                img,
+                                fface["kps_5"],
+                                fface["kps_all"],
+                                s_e=s_e,
+                                t_e=best_target.get_embedding(arcface_model),
+                                parameters=params,
+                                control=control,
+                                dfm_model_name=params["DFMModelSelection"],
+                                kv_map=best_target.assigned_kv_map,
+                            )
+                        )
+                        if edit_button_is_checked_global and any(
+                            params[f]
+                            for f in (
+                                "FaceMakeupEnableToggle",
+                                "HairMakeupEnableToggle",
+                                "EyeBrowsMakeupEnableToggle",
+                                "LipsMakeupEnableToggle",
+                            )
+                        ):
+                            img = self.frame_edits.swap_edit_face_core_makeup(
+                                img, fface["kps_all"], params.data, control
+                            )
+
+        # Undo Rotation / Scaling
+        if control["ManualRotationEnableToggle"]:
+            img = v2.functional.rotate(
+                img,
+                angle=-control["ManualRotationAngleSlider"],
+                interpolation=v2.InterpolationMode.BILINEAR,
+                expand=True,
+            )
+        if scale_applied:
+            img = v2.Resize(
+                (img_y, img_x),
+                interpolation=self.interpolation_scaleback,
+                antialias=False,
+            )(img)
+
+        processed_tensor_rgb_uint8 = img
+
+        # --- Overlays ---
+        if control["ShowAllDetectedFacesBBoxToggle"] and det_faces_data_for_display:
+            processed_tensor_rgb_uint8 = draw_bounding_boxes_on_detected_faces(
+                processed_tensor_rgb_uint8, det_faces_data_for_display
+            )
+
+        if control["ShowLandmarksEnableToggle"] and det_faces_data_for_display:
+            # 1. Prepare data in FrameWorker
+            landmarks_data = self._resolve_landmarks_to_draw(
+                det_faces_data_for_display, control
+            )
+
+            if landmarks_data:
+                # 2. Pass data to miscellaneous function (requires HWC format)
+                temp_permuted = processed_tensor_rgb_uint8.permute(1, 2, 0)
+                temp_permuted = paint_landmarks_on_image(temp_permuted, landmarks_data)
+                processed_tensor_rgb_uint8 = temp_permuted.permute(2, 0, 1)
+
+        compare_mode_active = self.is_view_face_mask or self.is_view_face_compare
+        if compare_mode_active and det_faces_data_for_display:
+            processed_tensor_rgb_uint8 = self.get_compare_faces_image(
+                processed_tensor_rgb_uint8, det_faces_data_for_display, control
+            )
+
+        return processed_tensor_rgb_uint8
+
+    def _resolve_landmarks_to_draw(self, det_faces_data: list, control: dict) -> list:
+        """
+        Helper to determine which landmarks to draw and in what color based on matches.
+        Returns a list of dicts suited for miscellaneous.paint_landmarks_on_image.
+        """
+        landmarks_to_draw = []
         for fface_data in det_faces_data:
             _, matched_params, _ = self._find_best_target_match(
                 fface_data["embedding"], control
             )
+            # Determine logic: Match found? Use adjusted kps?
             if matched_params:
+                use_adj = matched_params["LandmarksPositionAdjEnableToggle"]
+
+                # Select keypoints source
                 keypoints = (
-                    fface_data.get("kps_5")
-                    if matched_params["LandmarksPositionAdjEnableToggle"]
-                    else fface_data.get("kps_all")
+                    fface_data.get("kps_5") if use_adj else fface_data.get("kps_all")
                 )
-                kcolor = (
-                    (255, 0, 0)
-                    if matched_params["LandmarksPositionAdjEnableToggle"]
-                    else (0, 255, 255)
-                )
+
+                # Select color: Red (255,0,0) for adjusted, Cyan/Yellow (0,255,255) for original
+                kcolor = (255, 0, 0) if use_adj else (0, 255, 255)
+
                 if keypoints is not None:
-                    for kpoint in keypoints:
-                        kx, ky = int(kpoint[0]), int(kpoint[1])
-                        for i_offset in range(-p // 2, p // 2 + 1):
-                            for j_offset in range(-p // 2, p // 2 + 1):
-                                final_y, final_x = ky + i_offset, kx + j_offset
-                                if (
-                                    0 <= final_y < img_out_hwc.shape[0]
-                                    and 0 <= final_x < img_out_hwc.shape[1]
-                                ):
-                                    img_out_hwc[final_y, final_x] = torch.tensor(
-                                        kcolor, device=img.device, dtype=img.dtype
-                                    )
-        return img_out_hwc
+                    landmarks_to_draw.append({"kps": keypoints, "color": kcolor})
 
-    def draw_bounding_boxes_on_detected_faces(
-        self, img: torch.Tensor, det_faces_data: list, control: dict
-    ):
-        for i, fface in enumerate(det_faces_data):
-            color_rgb = [0, 255, 0]
-            bbox = fface["bbox"]
-            x_min, y_min, x_max, y_max = map(int, bbox)
-
-            # Ensure bounding box is within the image dimensions
-            _, h, w = img.shape
-            x_min, y_min = max(0, x_min), max(0, y_min)
-            x_max, y_max = min(w - 1, x_max), min(h - 1, y_max)
-
-            # Dynamically compute thickness based on the image resolution
-            max_dimension = max(
-                img.shape[1], img.shape[2]
-            )  # Height and width of the image
-            thickness = max(
-                4, max_dimension // 400
-            )  # Thickness is 1/200th of the largest dimension, minimum 1
-            # Prepare the color tensor with the correct dimensions
-            color_tensor_c11 = torch.tensor(
-                color_rgb, dtype=img.dtype, device=img.device
-            ).view(-1, 1, 1)
-            img[:, y_min : y_min + thickness, x_min : x_max + 1] = (
-                color_tensor_c11.expand(-1, thickness, x_max - x_min + 1)
-            )
-            img[:, y_max - thickness + 1 : y_max + 1, x_min : x_max + 1] = (
-                color_tensor_c11.expand(-1, thickness, x_max - x_min + 1)
-            )
-            img[:, y_min : y_max + 1, x_min : x_min + thickness] = (
-                color_tensor_c11.expand(-1, y_max - y_min + 1, thickness)
-            )
-            img[:, y_min : y_max + 1, x_max - thickness + 1 : x_max + 1] = (
-                color_tensor_c11.expand(-1, y_max - y_min + 1, thickness)
-            )
-        return img
+        return landmarks_to_draw
 
     def get_compare_faces_image(
         self, img: torch.Tensor, det_faces_data: list, control: dict
@@ -1280,7 +1219,7 @@ class FrameWorker(threading.Thread):
                     img, fface["kps_5"], parameters_for_face
                 )
                 if control["FrameEnhancerEnableToggle"]:
-                    enhanced_version = self.enhance_core(
+                    enhanced_version = self.frame_enhancers.enhance_core(
                         modified_face.clone(), control=control
                     )
                     if enhanced_version.shape[1:] != modified_face.shape[1:]:
@@ -1780,66 +1719,6 @@ class FrameWorker(threading.Thread):
             border_mask = gauss(border_mask)
         return border_mask, border_mask_calc
 
-    def get_grid_for_pasting(
-        self,
-        tform_target_to_source: trans.SimilarityTransform,
-        target_h: int,
-        target_w: int,
-        source_h: int,
-        source_w: int,
-        device: torch.device,
-    ):
-        # tform_target_to_source: maps points from target (e.g. full image) to source (e.g. 512x512 face)
-        grid_y, grid_x = torch.meshgrid(
-            torch.arange(target_h, device=device, dtype=torch.float32),
-            torch.arange(target_w, device=device, dtype=torch.float32),
-            indexing="ij",
-        )
-        target_grid_yx_pixels = torch.stack((grid_y, grid_x), dim=2).unsqueeze(
-            0
-        )  # 1xTargetHxTargetWx2 (Y,X order)
-
-        # Convert target grid pixel coordinates to homogeneous coordinates (X,Y,1)
-        target_grid_xy_flat_pixels = target_grid_yx_pixels[..., [1, 0]].reshape(
-            -1, 2
-        )  # (N,2) in XY
-        ones = torch.ones(
-            target_grid_xy_flat_pixels.shape[0], 1, device=device, dtype=torch.float32
-        )
-        homogeneous_target_grid_xy_pixels = torch.cat(
-            (target_grid_xy_flat_pixels, ones), dim=1
-        )  # (N,3)
-
-        # Transformation matrix from tform_target_to_source (2x3)
-        M_target_to_source = torch.tensor(
-            tform_target_to_source.params[0:2, :], dtype=torch.float32, device=device
-        )
-
-        # Transform target grid to source coordinates (pixels)
-        # (N,3) @ (3,2) -> (N,2) in XY order
-        source_coords_xy_flat_pixels = torch.matmul(
-            homogeneous_target_grid_xy_pixels, M_target_to_source.T
-        )
-
-        # Reshape to grid format 1xTargetHxTargetWx2
-        source_coords_xy_grid_pixels = source_coords_xy_flat_pixels.view(
-            1, target_h, target_w, 2
-        )
-
-        # Normalize source coordinates for grid_sample (expects XY order, range [-1,1])
-        source_grid_normalized_xy = torch.empty_like(source_coords_xy_grid_pixels)
-        # Normalize X coordinates
-        source_grid_normalized_xy[..., 0] = (
-            source_coords_xy_grid_pixels[..., 0] / (source_w - 1.0)
-        ) * 2.0 - 1.0
-        # Normalize Y coordinates
-        source_grid_normalized_xy[..., 1] = (
-            source_coords_xy_grid_pixels[..., 1] / (source_h - 1.0)
-        ) * 2.0 - 1.0
-
-        # target_grid_yx is not strictly needed by grid_sample but returned for completeness if ever useful
-        return target_grid_yx_pixels, source_grid_normalized_xy
-
     def swap_core(
         self,
         img: torch.Tensor,
@@ -2002,7 +1881,7 @@ class FrameWorker(threading.Thread):
             )
             and parameters["FaceExpressionBeforeTypeSelection"] == "Beginning"
         ):
-            swap = self.apply_face_expression_restorer(
+            swap = self.frame_edits.apply_face_expression_restorer(
                 original_face_512, swap, cast(dict, parameters)
             )
 
@@ -2014,7 +1893,7 @@ class FrameWorker(threading.Thread):
         ):
             editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
-            swap = self.swap_edit_face_core(swap, swap, parameters, control)
+            swap = self.frame_edits.swap_edit_face_core(swap, swap, parameters, control)
 
         # First Denoiser pass - Before Restorers
         if control.get("DenoiserUNetEnableBeforeRestorersToggle", False):
@@ -2288,7 +2167,7 @@ class FrameWorker(threading.Thread):
             and parameters["FaceExpressionBeforeTypeSelection"]
             == "After First Restorer"
         ):
-            swap = self.apply_face_expression_restorer(
+            swap = self.frame_edits.apply_face_expression_restorer(
                 original_face_512, swap, parameters
             )
 
@@ -2300,7 +2179,9 @@ class FrameWorker(threading.Thread):
         ):
             editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
-            swap = self.swap_edit_face_core(swap, swap_restorecalc, parameters, control)
+            swap = self.frame_edits.swap_edit_face_core(
+                swap, swap_restorecalc, parameters, control
+            )
             swap_mask = swap_mask_noFP
 
         # Second Denoiser pass - After First Restorer
@@ -2388,7 +2269,7 @@ class FrameWorker(threading.Thread):
             and parameters["FaceExpressionBeforeTypeSelection"]
             == "After Second Restorer"
         ):
-            swap = self.apply_face_expression_restorer(
+            swap = self.frame_edits.apply_face_expression_restorer(
                 original_face_512, swap, parameters
             )
 
@@ -2400,7 +2281,7 @@ class FrameWorker(threading.Thread):
         ):
             editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
-            swap = self.swap_edit_face_core(swap, swap, parameters, control)
+            swap = self.frame_edits.swap_edit_face_core(swap, swap, parameters, control)
             swap_mask = swap_mask_noFP
 
         # Textures and Color pass begins
@@ -2742,7 +2623,7 @@ class FrameWorker(threading.Thread):
         ):
             editor_mask = t512_mask(swap_mask).clone()
             swap = swap * editor_mask + original_face_512 * (1 - editor_mask)
-            swap = self.swap_edit_face_core(swap, swap, parameters, control)
+            swap = self.frame_edits.swap_edit_face_core(swap, swap, parameters, control)
             swap_mask = swap_mask_noFP
 
         # Second Restorer - After Diff / Texture Transfer and AutoColor
@@ -3060,835 +2941,6 @@ class FrameWorker(threading.Thread):
         img[0:3, top:bottom, left:right] = swap
 
         return img, original_face_512_clone, swap_mask_clone
-
-    def enhance_core(self, img, control):
-        enhancer_type = control["FrameEnhancerTypeSelection"]
-
-        match enhancer_type:
-            case (
-                "RealEsrgan-x2-Plus"
-                | "RealEsrgan-x4-Plus"
-                | "BSRGan-x2"
-                | "BSRGan-x4"
-                | "UltraSharp-x4"
-                | "UltraMix-x4"
-                | "RealEsr-General-x4v3"
-            ):
-                tile_size = 512
-
-                if (
-                    enhancer_type == "RealEsrgan-x2-Plus"
-                    or enhancer_type == "BSRGan-x2"
-                ):
-                    scale = 2
-                else:
-                    scale = 4
-
-                image = img.type(torch.float32)
-                if torch.max(image) > 256:  # 16-bit image
-                    max_range = 65535
-                else:
-                    max_range = 255
-
-                image = torch.div(image, max_range)
-                image = torch.unsqueeze(image, 0).contiguous()
-
-                image = self.models_processor.run_enhance_frame_tile_process(
-                    image, enhancer_type, tile_size=tile_size, scale=scale
-                )
-
-                image = torch.squeeze(image)
-                image = torch.clamp(image, 0, 1)
-                image = torch.mul(image, max_range)
-
-                # Blend
-                alpha = float(control["FrameEnhancerBlendSlider"]) / 100.0
-
-                t_scale = v2.Resize(
-                    (img.shape[1] * scale, img.shape[2] * scale),
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    antialias=False,
-                )
-                img = t_scale(img)
-                img = torch.add(torch.mul(image, alpha), torch.mul(img, 1 - alpha))
-                if max_range == 255:
-                    img = img.type(torch.uint8)
-                else:
-                    img = img.type(torch.uint16)
-
-            case "DeOldify-Artistic" | "DeOldify-Stable" | "DeOldify-Video":
-                render_factor = 384  # 12 * 32 | highest quality = 20 * 32 == 640
-
-                _, h, w = img.shape
-                t_resize_i = v2.Resize(
-                    (render_factor, render_factor),
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    antialias=False,
-                )
-                image = t_resize_i(img)
-
-                image = image.type(torch.float32)
-                image = torch.unsqueeze(image, 0).contiguous()
-
-                output = torch.empty(
-                    (image.shape),
-                    dtype=torch.float32,
-                    device=self.models_processor.device,
-                ).contiguous()
-
-                match enhancer_type:
-                    case "DeOldify-Artistic":
-                        self.models_processor.run_deoldify_artistic(image, output)
-                    case "DeOldify-Stable":
-                        self.models_processor.run_deoldify_stable(image, output)
-                    case "DeOldify-Video":
-                        self.models_processor.run_deoldify_video(image, output)
-
-                output = torch.squeeze(output)
-                t_resize_o = v2.Resize(
-                    (h, w), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
-                )
-                output = t_resize_o(output)
-
-                output = faceutil.rgb_to_yuv(output, True)
-                # do a black and white transform first to get better luminance values
-                hires = faceutil.rgb_to_yuv(img, True)
-
-                hires[1:3, :, :] = output[1:3, :, :]
-                hires = faceutil.yuv_to_rgb(hires, True)
-
-                # Blend
-                alpha = float(control["FrameEnhancerBlendSlider"]) / 100.0
-                img = torch.add(torch.mul(hires, alpha), torch.mul(img, 1 - alpha))
-
-                img = img.type(torch.uint8)
-
-            case "DDColor-Artistic" | "DDColor":
-                render_factor = 384  # 12 * 32 | highest quality = 20 * 32 == 640
-
-                # Converti RGB a LAB
-                #'''
-                # orig_l = img.permute(1, 2, 0).cpu().numpy()
-                # orig_l = cv2.cvtColor(orig_l, cv2.COLOR_RGB2Lab)
-                # orig_l = torch.from_numpy(orig_l).to(self.models_processor.device)
-                # orig_l = orig_l.permute(2, 0, 1)
-                #'''
-                orig_l = faceutil.rgb_to_lab(img, True)
-
-                orig_l = orig_l[0:1, :, :]  # (1, h, w)
-
-                # Resize per il modello
-                t_resize_i = v2.Resize(
-                    (render_factor, render_factor),
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    antialias=False,
-                )
-                image = t_resize_i(img)
-
-                # Converti RGB in LAB
-                #'''
-                # img_l = image.permute(1, 2, 0).cpu().numpy()
-                # img_l = cv2.cvtColor(img_l, cv2.COLOR_RGB2Lab)
-                # img_l = torch.from_numpy(img_l).to(self.models_processor.device)
-                # img_l = img_l.permute(2, 0, 1)
-                #'''
-                img_l = faceutil.rgb_to_lab(image, True)
-
-                img_l = img_l[0:1, :, :]  # (1, render_factor, render_factor)
-                img_gray_lab = torch.cat(
-                    (img_l, torch.zeros_like(img_l), torch.zeros_like(img_l)), dim=0
-                )  # (3, render_factor, render_factor)
-
-                # Converti LAB in RGB
-                #'''
-                # img_gray_lab = img_gray_lab.permute(1, 2, 0).cpu().numpy()
-                # img_gray_rgb = cv2.cvtColor(img_gray_lab, cv2.COLOR_LAB2RGB)
-                # img_gray_rgb = torch.from_numpy(img_gray_rgb).to(self.models_processor.device)
-                # img_gray_rgb = img_gray_rgb.permute(2, 0, 1)
-                #'''
-                img_gray_rgb = faceutil.lab_to_rgb(img_gray_lab)
-
-                tensor_gray_rgb = torch.unsqueeze(
-                    img_gray_rgb.type(torch.float32), 0
-                ).contiguous()
-
-                # Prepara il tensore per il modello
-                output_ab = torch.empty(
-                    (1, 2, render_factor, render_factor),
-                    dtype=torch.float32,
-                    device=self.models_processor.device,
-                )
-
-                # Esegui il modello
-                match enhancer_type:
-                    case "DDColor-Artistic":
-                        self.models_processor.run_ddcolor_artistic(
-                            tensor_gray_rgb, output_ab
-                        )
-                    case "DDColor":
-                        self.models_processor.run_ddcolor(tensor_gray_rgb, output_ab)
-
-                output_ab = output_ab.squeeze(0)  # (2, render_factor, render_factor)
-
-                t_resize_o = v2.Resize(
-                    (img.size(1), img.size(2)),
-                    interpolation=v2.InterpolationMode.BILINEAR,
-                    antialias=False,
-                )
-                output_lab_resize = t_resize_o(output_ab)
-
-                # Combina il canale L originale con il risultato del modello
-                output_lab = torch.cat(
-                    (orig_l, output_lab_resize), dim=0
-                )  # (3, original_H, original_W)
-
-                # Convert LAB to RGB
-                #'''
-                # output_rgb = output_lab.permute(1, 2, 0).cpu().numpy()
-                # output_rgb = cv2.cvtColor(output_rgb, cv2.COLOR_Lab2RGB)
-                # output_rgb = torch.from_numpy(output_rgb).to(self.models_processor.device)
-                # output_rgb = output_rgb.permute(2, 0, 1)
-                #'''
-                output_rgb = faceutil.lab_to_rgb(
-                    output_lab, True
-                )  # (3, original_H, original_W)
-
-                # Miscela le immagini
-                alpha = float(control["FrameEnhancerBlendSlider"]) / 100.0
-                blended_img = torch.add(
-                    torch.mul(output_rgb, alpha), torch.mul(img, 1 - alpha)
-                )
-
-                # Converti in uint8
-                img = blended_img.type(torch.uint8)
-
-        return img
-
-    def apply_face_expression_restorer(self, driving, target, parameters):
-        # 1. SETUP THE ASYNCHRONOUS CONTEXT
-        current_stream = torch.cuda.current_stream()
-
-        # All GPU model calls and dependent tensor operations will be queued inside this context.
-        with torch.cuda.stream(current_stream):
-            # --- START: ASYNCHRONOUS GPU WORK QUEUE ---
-
-            # **DRIVING FRAME PROCESSING**
-            _, driving_lmk_crop, _ = self.models_processor.run_detect_landmark(
-                driving,
-                bbox=np.array([0, 0, 512, 512]),
-                det_kpss=[],
-                detect_mode="203",
-                score=0.5,
-                from_points=False,
-            )
-            driving_face_512 = driving.clone()
-            driving_face_256 = self.t256_face(driving_face_512)
-
-            c_d_eyes_lst = faceutil.calc_eye_close_ratio(driving_lmk_crop[None])
-            c_d_lip_lst = faceutil.calc_lip_close_ratio(driving_lmk_crop[None])
-
-            x_d_i_info = self.models_processor.lp_motion_extractor(
-                driving_face_256, "Human-Face"
-            )
-
-            # --- VARIABLE DEFINITION (Original Placement) ---
-            driving_multiplier_eyes = parameters.get(
-                "FaceExpressionFriendlyFactorEyesDecimalSlider", 1.0
-            )  # Eyes slider
-            driving_multiplier_lips = parameters.get(
-                "FaceExpressionFriendlyFactorLipsDecimalSlider", 1.0
-            )  # Lips slider
-
-            flag_activate_eyes = parameters.get("FaceExpressionEyesToggle", False)
-            flag_eye_retargeting = parameters.get(
-                "FaceExpressionRetargetingEyesBothEnableToggle", False
-            )
-            eye_retargeting_multiplier = parameters.get(
-                "FaceExpressionRetargetingEyesMultiplierBothDecimalSlider", 1.0
-            )
-            flag_activate_lips = parameters.get("FaceExpressionLipsToggle", False)
-            flag_normalize_lip = parameters.get(
-                "FaceExpressionNormalizeLipsBothEnableToggle", False
-            )
-            lip_normalize_threshold = parameters.get(
-                "FaceExpressionNormalizeLipsThresholdBothDecimalSlider", 0.03
-            )
-            flag_normalize_eyes = parameters.get(
-                "FaceExpressionNormalizeEyesBothEnableToggle", True
-            )
-            eyes_normalize_threshold = parameters.get(
-                "FaceExpressionNormalizeEyesThresholdBothDecimalSlider", 0.40
-            )
-            flag_lip_retargeting = parameters.get(
-                "FaceExpressionRetargetingLipsBothEnableToggle", False
-            )
-            lip_retargeting_multiplier = parameters.get(
-                "FaceExpressionRetargetingLipsMultiplierBothDecimalSlider", 1.0
-            )
-            eyes_normalize_max = parameters.get(
-                "FaceExpressionNormalizeEyesMaxBothDecimalSlider", 0.50
-            )
-            flag_relative_motion_eyes = parameters.get(
-                "FaceExpressionRelativeEyesToggle", False
-            )
-            flag_relative_motion_lips = parameters.get(
-                "FaceExpressionRelativeLipsToggle", False
-            )
-            face_editor_type = parameters.get("FaceEditorTypeSelection", "Human-Face")
-
-            lip_delta_before_animation = None
-
-            target = torch.clamp(target, 0, 255).type(torch.uint8)
-            # ---------------------------------------------------
-
-            # **TARGET FRAME PROCESSING**
-            _, source_lmk, _ = self.models_processor.run_detect_landmark(
-                target,
-                bbox=np.array([0, 0, 512, 512]),
-                det_kpss=[],
-                detect_mode="203",
-                score=0.5,
-                from_points=False,
-            )
-
-            # NOTE: FaceEditorTypeSelection is used as a string literal; we keep accessing it directly as it's not cached in a local variable here.
-            target_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(
-                target,
-                source_lmk,
-                dsize=512,
-                scale=parameters.get("FaceExpressionCropScaleBothDecimalSlider", 2.3),
-                vy_ratio=parameters.get(
-                    "FaceExpressionVYRatioBothDecimalSlider", -0.125
-                ),
-                interpolation=v2.InterpolationMode.BILINEAR,
-            )
-
-            target_face_256 = self.t256_face(target_face_512)
-
-            x_s_info = self.models_processor.lp_motion_extractor(
-                target_face_256, "Human-Face"
-            )
-            x_c_s = x_s_info["kp"]
-            R_s = faceutil.get_rotation_matrix(
-                x_s_info["pitch"], x_s_info["yaw"], x_s_info["roll"]
-            )
-            f_s = self.models_processor.lp_appearance_feature_extractor(
-                target_face_256, "Human-Face"
-            )
-            x_s = faceutil.transform_keypoint(x_s_info)
-
-            # Normalization (Using local variables)
-            if flag_normalize_lip and source_lmk is not None:
-                c_d_lip_before_animation = [0.0]
-                combined_lip_ratio_tensor_before_animation = (
-                    faceutil.calc_combined_lip_ratio(
-                        c_d_lip_before_animation,
-                        source_lmk,
-                        device=self.models_processor.device,
-                    )
-                )
-                if (
-                    combined_lip_ratio_tensor_before_animation[0][0]
-                    >= lip_normalize_threshold
-                ):  # Use lip_normalize_threshold
-                    lip_delta_before_animation = self.models_processor.lp_retarget_lip(
-                        x_s, combined_lip_ratio_tensor_before_animation
-                    )
-
-            if flag_normalize_eyes and source_lmk is not None:
-                c_d_eyes_normalize = c_d_eyes_lst
-                eyes_ratio = np.array([c_d_eyes_normalize[0][0]], dtype=np.float32)
-                eyes_ratio_normalize = max(eyes_ratio, 0.10)
-                eyes_ratio_l = min(
-                    c_d_eyes_normalize[0][0], eyes_normalize_max
-                )  # Use eyes_normalize_max
-                eyes_ratio_r = min(
-                    c_d_eyes_normalize[0][1], eyes_normalize_max
-                )  # Use eyes_normalize_max
-                eyes_ratio_max = np.array(
-                    [[eyes_ratio_l, eyes_ratio_r]], dtype=np.float32
-                )
-                if (
-                    eyes_ratio_normalize > eyes_normalize_threshold
-                ):  # Use eyes_normalize_threshold
-                    combined_eyes_ratio_normalize = (
-                        faceutil.calc_combined_eye_ratio_norm(
-                            eyes_ratio_max,
-                            source_lmk,
-                            device=self.models_processor.device,
-                        )
-                    )
-                else:
-                    combined_eyes_ratio_normalize = faceutil.calc_combined_eye_ratio(
-                        eyes_ratio_max, source_lmk, device=self.models_processor.device
-                    )
-
-            delta_new_eyes = x_s_info["exp"].clone()
-            delta_new_lips = x_s_info["exp"].clone()
-
-            # Eyes Motion (Using local flags)
-            if flag_activate_eyes:  # Use flag_activate_eyes
-                for eyes_idx in [11, 13, 15, 16, 18]:
-                    if flag_relative_motion_eyes:  # Use flag_relative_motion_eyes
-                        delta_new_eyes[:, eyes_idx, :] = (
-                            x_s_info["exp"] + (x_d_i_info["exp"] - 0)
-                        )[:, eyes_idx, :]
-                    else:
-                        delta_new_eyes[:, eyes_idx, :] = x_d_i_info["exp"][
-                            :, eyes_idx, :
-                        ]
-
-                scale_new_eyes = x_s_info["scale"]
-                R_new_eyes = R_s
-                t_new_eyes = x_s_info["t"]
-
-                t_new_eyes[..., 2].fill_(0)
-                x_d_i_new_eyes = (
-                    scale_new_eyes * (x_c_s @ R_new_eyes + delta_new_eyes) + t_new_eyes
-                )
-
-            if flag_activate_eyes and not flag_eye_retargeting:  # Use flags
-                x_d_i_new_eyes = self.models_processor.lp_stitching(
-                    x_s, x_d_i_new_eyes, face_editor_type
-                )
-
-            elif flag_activate_eyes and flag_eye_retargeting:  # Use flags
-                eyes_delta = None
-                if (
-                    flag_eye_retargeting and source_lmk is not None
-                ):  # Use flag_eye_retargeting
-                    c_d_eyes_i = c_d_eyes_lst
-                    combined_eye_ratio_tensor = faceutil.calc_combined_eye_ratio(
-                        c_d_eyes_i, source_lmk, device=self.models_processor.device
-                    )
-                    if (
-                        flag_normalize_eyes
-                        and combined_eyes_ratio_normalize is not None
-                    ):  # Use flag_normalize_eyes
-                        combined_eye_ratio_tensor = (
-                            combined_eyes_ratio_normalize * eye_retargeting_multiplier
-                        )  # Use eye_retargeting_multiplier
-                        eyes_delta = self.models_processor.lp_retarget_eye(
-                            x_s,
-                            combined_eye_ratio_tensor,
-                            face_editor_type,
-                        )
-                    else:
-                        combined_eye_ratio_tensor = (
-                            combined_eye_ratio_tensor * eye_retargeting_multiplier
-                        )  # Use eye_retargeting_multiplier
-                        eyes_delta = self.models_processor.lp_retarget_eye(
-                            x_s,
-                            combined_eye_ratio_tensor,
-                            face_editor_type,
-                        )
-                if flag_relative_motion_eyes:  # Use flag_relative_motion_eyes
-                    x_d_i_new_eyes = x_s + (eyes_delta if eyes_delta is not None else 0)
-                else:
-                    x_d_i_new_eyes = x_d_i_new_eyes + (
-                        eyes_delta if eyes_delta is not None else 0
-                    )
-                x_d_i_new_eyes = self.models_processor.lp_stitching(
-                    x_s, x_d_i_new_eyes, face_editor_type
-                )
-
-            if flag_activate_eyes:  # Use flag_activate_eyes
-                x_d_i_new_eyes = (
-                    x_d_i_new_eyes - x_s
-                ) * driving_multiplier_eyes  # Use driving_multiplier_eyes
-
-            # Lips Motion (Using local flags)
-            if flag_activate_lips:  # Use flag_activate_lips
-                for lip_idx in [6, 12, 14, 17, 19, 20]:
-                    if flag_relative_motion_lips:  # Use flag_relative_motion_lips
-                        delta_new_lips[:, lip_idx, :] = (
-                            x_s_info["exp"]
-                            + (
-                                x_d_i_info["exp"]
-                                - torch.from_numpy(
-                                    self.models_processor.lp_lip_array
-                                ).to(
-                                    dtype=torch.float32,
-                                    device=self.models_processor.device,
-                                )
-                            )
-                        )[:, lip_idx, :]
-                    else:
-                        delta_new_lips[:, lip_idx, :] = x_d_i_info["exp"][:, lip_idx, :]
-
-                scale_new_lips = x_s_info["scale"]
-                R_new_lips = R_s
-                t_new_lips = x_s_info["t"]
-
-                t_new_lips[..., 2].fill_(0)
-                x_d_i_new_lips = (
-                    scale_new_lips * (x_c_s @ R_new_lips + delta_new_lips) + t_new_lips
-                )
-
-            if flag_activate_lips and not flag_lip_retargeting:  # Use flags
-                if (
-                    flag_normalize_lip and lip_delta_before_animation is not None
-                ):  # Use flag_normalize_lip
-                    x_d_i_new_lips = (
-                        self.models_processor.lp_stitching(
-                            x_s, x_d_i_new_lips, face_editor_type
-                        )
-                        + lip_delta_before_animation
-                    )
-                else:
-                    x_d_i_new_lips = self.models_processor.lp_stitching(
-                        x_s, x_d_i_new_lips, face_editor_type
-                    )
-
-            elif flag_activate_lips and flag_lip_retargeting:  # Use flags
-                lip_delta = None
-                if (
-                    flag_lip_retargeting and source_lmk is not None
-                ):  # Use flag_lip_retargeting
-                    c_d_lip_i = c_d_lip_lst
-                    combined_lip_ratio_tensor = faceutil.calc_combined_lip_ratio(
-                        c_d_lip_i, source_lmk, device=self.models_processor.device
-                    )
-                    combined_lip_ratio_tensor = (
-                        combined_lip_ratio_tensor * lip_retargeting_multiplier
-                    )  # Use lip_retargeting_multiplier
-                    lip_delta = self.models_processor.lp_retarget_lip(
-                        x_s,
-                        combined_lip_ratio_tensor,
-                        face_editor_type,
-                    )
-                if flag_relative_motion_lips:  # Use flag_relative_motion_lips
-                    x_d_i_new_lips = x_s + (lip_delta if lip_delta is not None else 0)
-                else:
-                    x_d_i_new_lips = x_d_i_new_lips + (
-                        lip_delta if lip_delta is not None else 0
-                    )
-                x_d_i_new_lips = self.models_processor.lp_stitching(
-                    x_s, x_d_i_new_lips, face_editor_type
-                )
-
-            if flag_activate_lips:  # Use flag_activate_lips
-                x_d_i_new_lips = (
-                    x_d_i_new_lips - x_s
-                ) * driving_multiplier_lips  # Use driving_multiplier_lips
-
-            # Final combination of motion (Using local flags)
-            if flag_activate_lips and flag_activate_eyes:
-                x_d_i_new = x_s + x_d_i_new_eyes + x_d_i_new_lips
-            elif flag_activate_eyes and not flag_activate_lips:
-                x_d_i_new = x_s + x_d_i_new_eyes
-            elif not flag_activate_eyes and flag_activate_lips:
-                x_d_i_new = x_s + x_d_i_new_lips
-
-            # ASYNC CALL N (Last GPU Inference): Warp Decode (Queued)
-            out = self.models_processor.lp_warp_decode(
-                f_s, x_s, x_d_i_new, face_editor_type
-            )
-            out = torch.squeeze(out)
-            out = torch.clamp(out, 0, 1)
-
-            # --- END: ASYNCHRONOUS GPU WORK QUEUE ---
-
-        # --- SYNCHRONIZATION POINT (CRITICAL for Pipelining) ---
-        current_stream.synchronize()
-
-        # Post-processing (CPU operations)
-        with self.lock:
-            t = trans.SimilarityTransform()
-            t.params[0:2] = M_c2o
-            dsize = (target.shape[1], target.shape[2])
-            out = faceutil.pad_image_by_size(out, dsize)
-            out = v2.functional.affine(
-                out,
-                t.rotation * 57.2958,
-                translate=(t.translation[0], t.translation[1]),
-                scale=t.scale,
-                shear=(0.0, 0.0),
-                interpolation=v2.InterpolationMode.BILINEAR,
-                center=(0, 0),
-            )
-            out = v2.functional.crop(out, 0, 0, dsize[0], dsize[1])
-
-        out = torch.clamp(torch.mul(out, 255.0), 0, 255).type(torch.float32)
-
-        return out
-
-    def swap_edit_face_core(
-        self, img, swap_restorecalc, parameters, control, **kwargs
-    ):  # img = RGB
-        # Grab 512 face from image and create 256 and 128 copys
-        if parameters["FaceEditorEnableToggle"]:
-            # 1. SETUP THE ASYNCHRONOUS CONTEXT
-            current_stream = torch.cuda.current_stream()
-
-            # Start the asynchronous queue for all GPU operations
-            with torch.cuda.stream(current_stream):
-                # initial eye_ratio and lip_ratio values
-                init_source_eye_ratio = 0.0
-                init_source_lip_ratio = 0.0
-
-                # ASYNC CANDIDATE 1: Landmark Detection
-                _, lmk_crop, _ = self.models_processor.run_detect_landmark(
-                    swap_restorecalc,
-                    bbox=np.array([0, 0, 512, 512]),
-                    det_kpss=[],
-                    detect_mode="203",
-                    score=0.5,
-                    from_points=False,
-                )
-                source_eye_ratio = faceutil.calc_eye_close_ratio(lmk_crop[None])
-                source_lip_ratio = faceutil.calc_lip_close_ratio(lmk_crop[None])
-                init_source_eye_ratio = round(float(source_eye_ratio.mean()), 2)
-                init_source_lip_ratio = round(float(source_lip_ratio[0][0]), 2)
-
-                # prepare_retargeting_image
-                original_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(
-                    img,
-                    lmk_crop,
-                    dsize=512,
-                    scale=parameters["FaceEditorCropScaleDecimalSlider"],
-                    vy_ratio=parameters["FaceEditorVYRatioDecimalSlider"],
-                    interpolation=self.interpolation_expression_faceeditor_back,
-                )
-                original_face_256 = self.t256_face(original_face_512)
-
-                # ASYNC CANDIDATE 2: Motion Extractor
-                x_s_info = self.models_processor.lp_motion_extractor(
-                    original_face_256, parameters["FaceEditorTypeSelection"]
-                )
-                x_d_info_user_pitch = (
-                    x_s_info["pitch"] + parameters["HeadPitchSlider"]
-                )  # input_head_pitch_variation
-                x_d_info_user_yaw = (
-                    x_s_info["yaw"] + parameters["HeadYawSlider"]
-                )  # input_head_yaw_variation
-                x_d_info_user_roll = (
-                    x_s_info["roll"] + parameters["HeadRollSlider"]
-                )  # input_head_roll_variation
-                R_s_user = faceutil.get_rotation_matrix(
-                    x_s_info["pitch"], x_s_info["yaw"], x_s_info["roll"]
-                )
-                R_d_user = faceutil.get_rotation_matrix(
-                    x_d_info_user_pitch, x_d_info_user_yaw, x_d_info_user_roll
-                )
-
-                # ASYNC CANDIDATE 3: Appearance Extractor
-                f_s_user = self.models_processor.lp_appearance_feature_extractor(
-                    original_face_256, parameters["FaceEditorTypeSelection"]
-                )
-                x_s_user = faceutil.transform_keypoint(x_s_info)
-
-                # execute_image_retargeting
-                # Note: Ces variables sont des Tensors sur GPU (self.models_processor.device)
-                mov_x = torch.tensor(parameters["XAxisMovementDecimalSlider"]).to(
-                    self.models_processor.device
-                )
-                mov_y = torch.tensor(parameters["YAxisMovementDecimalSlider"]).to(
-                    self.models_processor.device
-                )
-                mov_z = torch.tensor(parameters["ZAxisMovementDecimalSlider"]).to(
-                    self.models_processor.device
-                )
-                eyeball_direction_x = torch.tensor(
-                    parameters["EyeGazeHorizontalDecimalSlider"]
-                ).to(self.models_processor.device)
-                eyeball_direction_y = torch.tensor(
-                    parameters["EyeGazeVerticalDecimalSlider"]
-                ).to(self.models_processor.device)
-                smile = torch.tensor(parameters["MouthSmileDecimalSlider"]).to(
-                    self.models_processor.device
-                )
-                wink = torch.tensor(parameters["EyeWinkDecimalSlider"]).to(
-                    self.models_processor.device
-                )
-                eyebrow = torch.tensor(parameters["EyeBrowsDirectionDecimalSlider"]).to(
-                    self.models_processor.device
-                )
-                lip_variation_zero = torch.tensor(
-                    parameters["MouthPoutingDecimalSlider"]
-                ).to(self.models_processor.device)
-                lip_variation_one = torch.tensor(
-                    parameters["MouthPursingDecimalSlider"]
-                ).to(self.models_processor.device)
-                lip_variation_two = torch.tensor(
-                    parameters["MouthGrinDecimalSlider"]
-                ).to(self.models_processor.device)
-                lip_variation_three = torch.tensor(
-                    parameters["LipsCloseOpenSlider"]
-                ).to(self.models_processor.device)
-
-                x_c_s = x_s_info["kp"]
-                delta_new = x_s_info["exp"]
-                scale_new = x_s_info["scale"]
-                t_new = x_s_info["t"]
-                R_d_new = (R_d_user @ R_s_user.permute(0, 2, 1)) @ R_s_user
-
-                # Facial Expression Updates (Tensor operations, queued on GPU)
-                if eyeball_direction_x != 0 or eyeball_direction_y != 0:
-                    delta_new = faceutil.update_delta_new_eyeball_direction(
-                        eyeball_direction_x, eyeball_direction_y, delta_new
-                    )
-                if smile != 0:
-                    delta_new = faceutil.update_delta_new_smile(smile, delta_new)
-                if wink != 0:
-                    delta_new = faceutil.update_delta_new_wink(wink, delta_new)
-                if eyebrow != 0:
-                    delta_new = faceutil.update_delta_new_eyebrow(eyebrow, delta_new)
-                if lip_variation_zero != 0:
-                    delta_new = faceutil.update_delta_new_lip_variation_zero(
-                        lip_variation_zero, delta_new
-                    )
-                if lip_variation_one != 0:
-                    delta_new = faceutil.update_delta_new_lip_variation_one(
-                        lip_variation_one, delta_new
-                    )
-                if lip_variation_two != 0:
-                    delta_new = faceutil.update_delta_new_lip_variation_two(
-                        lip_variation_two, delta_new
-                    )
-                if lip_variation_three != 0:
-                    delta_new = faceutil.update_delta_new_lip_variation_three(
-                        lip_variation_three, delta_new
-                    )
-                if mov_x != 0:
-                    delta_new = faceutil.update_delta_new_mov_x(-mov_x, delta_new)
-                if mov_y != 0:
-                    delta_new = faceutil.update_delta_new_mov_y(mov_y, delta_new)
-
-                x_d_new = mov_z * scale_new * (x_c_s @ R_d_new + delta_new) + t_new
-                eyes_delta, lip_delta = None, None
-
-                # Eyes Retargeting (Conditional ASYNC CANDIDATE)
-                input_eye_ratio = max(
-                    min(
-                        init_source_eye_ratio
-                        + parameters["EyesOpenRatioDecimalSlider"],
-                        0.80,
-                    ),
-                    0.00,
-                )
-                if input_eye_ratio != init_source_eye_ratio:
-                    combined_eye_ratio_tensor = faceutil.calc_combined_eye_ratio(
-                        [[float(input_eye_ratio)]],
-                        lmk_crop,
-                        device=self.models_processor.device,
-                    )
-                    eyes_delta = self.models_processor.lp_retarget_eye(
-                        x_s_user,
-                        combined_eye_ratio_tensor,
-                        parameters["FaceEditorTypeSelection"],
-                    )  # ASYNC
-
-                # Lips Retargeting (Conditional ASYNC CANDIDATE)
-                input_lip_ratio = max(
-                    min(
-                        init_source_lip_ratio
-                        + parameters["LipsOpenRatioDecimalSlider"],
-                        0.80,
-                    ),
-                    0.00,
-                )
-                if input_lip_ratio != init_source_lip_ratio:
-                    combined_lip_ratio_tensor = faceutil.calc_combined_lip_ratio(
-                        [[float(input_lip_ratio)]],
-                        lmk_crop,
-                        device=self.models_processor.device,
-                    )
-                    lip_delta = self.models_processor.lp_retarget_lip(
-                        x_s_user,
-                        combined_lip_ratio_tensor,
-                        parameters["FaceEditorTypeSelection"],
-                    )  # ASYNC
-
-                x_d_new = (
-                    x_d_new
-                    + (eyes_delta if eyes_delta is not None else 0)
-                    + (lip_delta if lip_delta is not None else 0)
-                )
-
-                flag_stitching_retargeting_input: bool = kwargs.get(
-                    "flag_stitching_retargeting_input", True
-                )
-                if flag_stitching_retargeting_input:
-                    # ASYNC CANDIDATE 4: Stitching
-                    x_d_new = self.models_processor.lp_stitching(
-                        x_s_user, x_d_new, parameters["FaceEditorTypeSelection"]
-                    )
-
-                # ASYNC CANDIDATE 5 (Final Inference): Warp Decode
-                out = self.models_processor.lp_warp_decode(
-                    f_s_user, x_s_user, x_d_new, parameters["FaceEditorTypeSelection"]
-                )
-                out = torch.squeeze(out)
-                out = torch.clamp(out, 0, 1)  # GPU operation
-
-                # --- END: ASYNCHRONOUS GPU WORK QUEUE ---
-
-            # --- SYNCHRONIZATION POINT (CRITICAL) ---
-            # Wait for all GPU tasks queued above to complete before starting CPU-dependent post-processing.
-            current_stream.synchronize()
-
-            # --- POST-PROCESSING (Potentially CPU-bound or requiring synchronized GPU result) ---
-            t = trans.SimilarityTransform()
-            t.params[0:2] = M_c2o
-            dsize = (img.shape[1], img.shape[2])
-            # pad image by image size
-            out = faceutil.pad_image_by_size(out, dsize)
-            out = v2.functional.affine(
-                out,
-                t.rotation * 57.2958,
-                translate=(t.translation[0], t.translation[1]),
-                scale=t.scale,
-                shear=(0.0, 0.0),
-                interpolation=self.interpolation_expression_faceeditor_back,
-                center=(0, 0),
-            )
-            out = v2.functional.crop(out, 0, 0, dsize[0], dsize[1])  # cols, rows
-
-            img = out
-            img = torch.mul(img, 255.0)
-            img = torch.clamp(img, 0, 255).type(torch.float32)
-
-        return img
-
-    def swap_edit_face_core_makeup(
-        self, img, kps, parameters, control, **kwargs
-    ):  # img = RGB
-        if (
-            parameters["FaceMakeupEnableToggle"]
-            or parameters["HairMakeupEnableToggle"]
-            or parameters["EyeBrowsMakeupEnableToggle"]
-            or parameters["LipsMakeupEnableToggle"]
-        ):  # or parameters['EyesMakeupEnableToggle']:
-            _, lmk_crop, _ = self.models_processor.run_detect_landmark(
-                img,
-                bbox=[],
-                det_kpss=kps,
-                detect_mode="203",
-                score=0.5,
-                from_points=True,
-            )
-
-            # prepare_retargeting_image
-            original_face_512, M_o2c, M_c2o = faceutil.warp_face_by_face_landmark_x(
-                img,
-                lmk_crop,
-                dsize=512,
-                scale=parameters["FaceEditorCropScaleDecimalSlider"],
-                vy_ratio=parameters["FaceEditorVYRatioDecimalSlider"],
-                interpolation=self.interpolation_expression_faceeditor_back,
-            )
-
-            out, mask_out = self.models_processor.apply_face_makeup(
-                original_face_512, parameters
-            )
-            if 1:
-                gauss = transforms.GaussianBlur(5 * 2 + 1, (5 + 1) * 0.2)
-                out = torch.clamp(torch.div(out, 255.0), 0, 1).type(torch.float32)
-                mask_crop = gauss(self.models_processor.lp_mask_crop)
-                img = faceutil.paste_back_adv(out, M_c2o, img, mask_crop)
-
-        return img
 
     @torch.no_grad()
     def gradient_magnitude(

@@ -198,146 +198,156 @@ def show_hide_related_widgets(
 ):
     if main_window.parameter_widgets:
         group_layout_data = parent_widget.group_layout_data  # Dictionary contaning layout data of all elements in the group of the parent_widget
+
+        # --- CASE 1: PARENT IS A SELECTION BOX (e.g., Simple/Advanced) ---
         if "Selection" in parent_widget_name:
-            # Loop through all widgets data in the parent widget's group layout data
             for widget_name in group_layout_data.keys():
-                # Store the widget object (instance) from the parameters_widgets Dictionary
                 current_widget = main_window.parameter_widgets.get(widget_name)
-                # Check if the current_widget depends on the Parent Widget's (selection) value
+                layout_info = group_layout_data[widget_name]
+
+                # Only process widgets that depend on THIS selection box
                 if (
-                    group_layout_data[widget_name].get("parentSelection", "")
-                    == parent_widget_name
+                    layout_info.get("parentSelection", "") == parent_widget_name
                     and current_widget
                 ):
-                    # Check if the current_widget has the required value of Parent Widget's (selection) current value to hide/show the current_widget
-                    if (
-                        group_layout_data[widget_name].get("requiredSelectionValue")
-                        != parent_widget.currentText()
-                    ):
-                        current_widget.hide()
-                        current_widget.label_widget.hide()
-                        current_widget.reset_default_button.hide()
-                        if current_widget.line_edit:
-                            current_widget.line_edit.hide()
-                    else:
+                    # 1. Check Selection Condition
+                    selection_condition_met = (
+                        layout_info.get("requiredSelectionValue")
+                        == parent_widget.currentText()
+                    )
+
+                    # 2. Check Toggle Condition (Cross-Check)
+                    # Even if selection matches, we must check if the parent toggles are ON
+                    toggle_condition_met = True
+                    parentToggles = layout_info.get("parentToggle", "")
+
+                    if parentToggles and selection_condition_met:
+                        if "&" in parentToggles:
+                            toggles = [t.strip() for t in parentToggles.split("&")]
+                            for t_name in toggles:
+                                t_widget = main_window.parameter_widgets.get(t_name)
+                                if t_widget and not t_widget.isChecked():
+                                    toggle_condition_met = False
+                                    break
+                        elif "|" in parentToggles:
+                            toggle_condition_met = False
+                            toggles = [t.strip() for t in parentToggles.split("|")]
+                            for t_name in toggles:
+                                t_widget = main_window.parameter_widgets.get(t_name)
+                                if t_widget and t_widget.isChecked():
+                                    toggle_condition_met = True
+                                    break
+                        else:
+                            # Single toggle or simple logic
+                            t_widget = main_window.parameter_widgets.get(parentToggles)
+                            required_val = layout_info.get("requiredToggleValue", True)
+                            if t_widget and t_widget.isChecked() != required_val:
+                                toggle_condition_met = False
+
+                    # Final Decision
+                    if selection_condition_met and toggle_condition_met:
                         current_widget.show()
                         current_widget.label_widget.show()
                         current_widget.reset_default_button.show()
                         if current_widget.line_edit:
                             current_widget.line_edit.show()
+                    else:
+                        current_widget.hide()
+                        current_widget.label_widget.hide()
+                        current_widget.reset_default_button.hide()
+                        if current_widget.line_edit:
+                            current_widget.line_edit.hide()
 
+        # --- CASE 2: PARENT IS A TOGGLE BUTTON ---
         elif "Toggle" in parent_widget_name:
-            # Loop through all widgets data in the parent widget's group layout data
             for widget_name in group_layout_data.keys():
-                # Store the widget object (instance) from the parameters_widgets Dictionary
                 if widget_name not in main_window.parameter_widgets:
                     continue
                 current_widget = main_window.parameter_widgets[widget_name]
-                # Check if the current_widget depends on the Parent Widget's (toggle) value
-                parentToggles = group_layout_data[widget_name].get("parentToggle", "")
+                layout_info = group_layout_data[widget_name]
+
+                parentToggles = layout_info.get("parentToggle", "")
+
+                # Only process widgets that depend on THIS toggle (or have it in their chain)
                 if parent_widget_name in parentToggles:
+                    # 1. Check Selection Condition (Cross-Check)
+                    # Before evaluating toggles, check if the parent Selection is valid
+                    selection_condition_met = True
+                    parentSelection = layout_info.get("parentSelection", "")
+                    if parentSelection:
+                        sel_widget = main_window.parameter_widgets.get(parentSelection)
+                        if sel_widget and sel_widget.currentText() != layout_info.get(
+                            "requiredSelectionValue"
+                        ):
+                            selection_condition_met = False
+
+                    # 2. Check Toggle Condition
+                    toggle_condition_met = False
+
                     if "," in parentToggles:
+                        # Legacy comma logic (iterative check)
                         result = [item.strip() for item in parentToggles.split(",")]
                         parentToggle_ischecked = False
                         for _, required_widget_name in enumerate(result):
-                            parentToggle_ischecked = main_window.parameter_widgets[
-                                required_widget_name
-                            ].isChecked()
-                        # Check if the current_widget has the required toggle value of Parent Widget's (toggle) checked state to hide/show the current_widget
-                        if (
-                            group_layout_data[widget_name].get("requiredToggleValue")
-                            != parentToggle_ischecked
-                        ):
-                            current_widget.hide()
-                            current_widget.label_widget.hide()
-                            current_widget.reset_default_button.hide()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.hide()
-                        else:
-                            current_widget.show()
-                            current_widget.label_widget.show()
-                            current_widget.reset_default_button.show()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.show()
-                    elif "|" in parentToggles:
-                        result = [item.strip() for item in parentToggles.split("|")]
-                        parentToggle_ischecked = True
-                        # Check if any of the parentToggles are checked
-                        for _, required_widget_name in enumerate(result):
-                            ischecked = main_window.parameter_widgets[
-                                required_widget_name
-                            ].isChecked()
-                            if ischecked:
-                                parentToggle_ischecked = True
-                                break
-                            else:
-                                parentToggle_ischecked = False
+                            w = main_window.parameter_widgets.get(required_widget_name)
+                            if w:
+                                parentToggle_ischecked = w.isChecked()
 
-                        # Check if the current_widget has the required toggle value of Parent Widget's (toggle) checked state to hide/show the current_widget
                         if (
-                            group_layout_data[widget_name].get("requiredToggleValue")
-                            != parentToggle_ischecked
+                            layout_info.get("requiredToggleValue")
+                            == parentToggle_ischecked
                         ):
-                            current_widget.hide()
-                            current_widget.label_widget.hide()
-                            current_widget.reset_default_button.hide()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.hide()
-                        else:
-                            current_widget.show()
-                            current_widget.label_widget.show()
-                            current_widget.reset_default_button.show()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.show()
+                            toggle_condition_met = True
+
+                    elif "|" in parentToggles:
+                        # OR Logic
+                        result = [item.strip() for item in parentToggles.split("|")]
+                        any_checked = False
+                        for required_widget_name in result:
+                            w = main_window.parameter_widgets.get(required_widget_name)
+                            if w and w.isChecked():
+                                any_checked = True
+                                break
+
+                        if layout_info.get("requiredToggleValue") == any_checked:
+                            toggle_condition_met = True
 
                     elif "&" in parentToggles:
+                        # AND Logic
                         result = [item.strip() for item in parentToggles.split("&")]
-                        parentToggle_ischecked = True
-                        # Check if any of the parentToggles are checked
-                        for _, required_widget_name in enumerate(result):
-                            ischecked = main_window.parameter_widgets[
-                                required_widget_name
-                            ].isChecked()
-                            parentToggle_ischecked = (
-                                parentToggle_ischecked and ischecked
-                            )
+                        all_checked = True
+                        for required_widget_name in result:
+                            w = main_window.parameter_widgets.get(required_widget_name)
+                            if w and not w.isChecked():
+                                all_checked = False
+                                break
 
-                        # Check if the current_widget has the required toggle value of Parent Widget's (toggle) checked state to hide/show the current_widget
-                        if (
-                            group_layout_data[widget_name].get("requiredToggleValue")
-                            != parentToggle_ischecked
-                        ):
-                            current_widget.hide()
-                            current_widget.label_widget.hide()
-                            current_widget.reset_default_button.hide()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.hide()
-                        else:
-                            current_widget.show()
-                            current_widget.label_widget.show()
-                            current_widget.reset_default_button.show()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.show()
+                        if layout_info.get("requiredToggleValue") == all_checked:
+                            toggle_condition_met = True
 
                     else:
-                        parentToggle_ischecked = main_window.parameter_widgets[
-                            parentToggles
-                        ].isChecked()
+                        # Single Toggle
+                        w = main_window.parameter_widgets.get(parentToggles)
+                        parentToggle_ischecked = w.isChecked() if w else False
                         if (
-                            group_layout_data[widget_name].get("requiredToggleValue")
-                            != parentToggle_ischecked
+                            layout_info.get("requiredToggleValue")
+                            == parentToggle_ischecked
                         ):
-                            current_widget.hide()
-                            current_widget.label_widget.hide()
-                            current_widget.reset_default_button.hide()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.hide()
-                        else:
-                            current_widget.show()
-                            current_widget.label_widget.show()
-                            current_widget.reset_default_button.show()
-                            if current_widget.line_edit:
-                                current_widget.line_edit.show()
+                            toggle_condition_met = True
+
+                    # Final Decision
+                    if selection_condition_met and toggle_condition_met:
+                        current_widget.show()
+                        current_widget.label_widget.show()
+                        current_widget.reset_default_button.show()
+                        if current_widget.line_edit:
+                            current_widget.line_edit.show()
+                    else:
+                        current_widget.hide()
+                        current_widget.label_widget.hide()
+                        current_widget.reset_default_button.hide()
+                        if current_widget.line_edit:
+                            current_widget.line_edit.hide()
 
             parent_widget.start_animation()
 
