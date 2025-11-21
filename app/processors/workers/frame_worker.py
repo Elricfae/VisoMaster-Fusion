@@ -157,7 +157,9 @@ class FrameWorker(threading.Thread):
                     continue
                 except Exception as e:
                     # An error happened *during* processing (process_and_emit_task)
-                    print(f"[ERROR] Error in {self.name} (frame {self.frame_number}): {e}")
+                    print(
+                        f"[ERROR] Error in {self.name} (frame {self.frame_number}): {e}"
+                    )
                     traceback.print_exc()
                     # We still need to mark the task as done in 'finally'
 
@@ -3291,7 +3293,7 @@ class FrameWorker(threading.Thread):
 
             # --- VARIABLE DEFINITION (Original Placement) ---
             driving_multiplier_eyes = parameters.get(
-                "FaceExpressionFriendlyFactorEyesDecimalSlider", 1.0 
+                "FaceExpressionFriendlyFactorEyesDecimalSlider", 1.0
             )  # Eyes slider
             driving_multiplier_lips = parameters.get(
                 "FaceExpressionFriendlyFactorLipsDecimalSlider", 1.0
@@ -3326,9 +3328,13 @@ class FrameWorker(threading.Thread):
             eyes_normalize_max = parameters.get(
                 "FaceExpressionNormalizeEyesMaxBothDecimalSlider", 0.50
             )
-            flag_relative_motion_eyes = parameters.get("FaceExpressionRelativeEyesToggle", False)
-            flag_relative_motion_lips = parameters.get("FaceExpressionRelativeLipsToggle", False)
-            face_editor_type =  parameters.get("FaceEditorTypeSelection", "Human-Face")
+            flag_relative_motion_eyes = parameters.get(
+                "FaceExpressionRelativeEyesToggle", False
+            )
+            flag_relative_motion_lips = parameters.get(
+                "FaceExpressionRelativeLipsToggle", False
+            )
+            face_editor_type = parameters.get("FaceEditorTypeSelection", "Human-Face")
 
             lip_delta_before_animation = None
 
@@ -3351,7 +3357,9 @@ class FrameWorker(threading.Thread):
                 source_lmk,
                 dsize=512,
                 scale=parameters.get("FaceExpressionCropScaleBothDecimalSlider", 2.3),
-                vy_ratio=parameters.get("FaceExpressionVYRatioBothDecimalSlider", -0.125),
+                vy_ratio=parameters.get(
+                    "FaceExpressionVYRatioBothDecimalSlider", -0.125
+                ),
                 interpolation=v2.InterpolationMode.BILINEAR,
             )
 
