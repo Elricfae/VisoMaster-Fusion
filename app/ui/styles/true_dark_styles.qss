@@ -149,14 +149,29 @@ TargetMediaCardButton:focus:checked, TargetFaceCardButton:focus:checked, InputFa
     border: 2px solid #4090a3;
 }
 
-#targetVideosList::item:selected, #targetFacesList::item:selected, #inputFacesList::item:selected, #inputEmbeddingsList::item:selected {
-    background: transparent;
-    border: none;
+/* QListWidget Native Item Styling (Matches old CardButton theme) */
+#targetVideosList::item, #targetFacesList::item, #inputFacesList::item, #inputEmbeddingsList::item {
+    background-color: #1a1a1a;  /* Neutral inactive card background */
+    border-radius: 5px;         /* Rounded corners */
+    border: 1px solid #363636;  /* Darkest Subtle border */
+    color: #f0f0f0;             /* Lighter text */
+    padding: 4px;
 }
 
 #targetVideosList::item:hover, #targetFacesList::item:hover, #inputFacesList::item:hover, #inputEmbeddingsList::item:hover {
-    background: transparent;
-    border: none;
+    background-color: #1f1f1f;  /* Keep hover subtle and neutral */
+    border: 1px solid #4090a3;  /* Accent border on hover */
+}
+
+#targetVideosList::item:selected, #targetFacesList::item:selected, #inputFacesList::item:selected, #inputEmbeddingsList::item:selected {
+    border: 2px solid #4090a3;  /* Thicker accent border */
+    background-color: #274d57;  /* Distinct active background */
+    color: #ffffff;
+}
+
+/* Remove default dotted focus outline from lists */
+#targetVideosList, #targetFacesList, #inputFacesList, #inputEmbeddingsList {
+    outline: none;
 }
 
 

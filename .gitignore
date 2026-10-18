@@ -45,3 +45,6 @@ test_frames*/
 test_videos*/
 presets/
 temp_files/
+todo/
+crash_logs/
+appbackup/
