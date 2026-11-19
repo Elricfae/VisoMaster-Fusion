@@ -131,6 +131,43 @@ def change_execution_provider(
     clear_gpu_memory(main_window)
 
 
+def handle_trt_context_memory_sharing_toggle(
+    main_window: "MainWindow", enabled: bool
+) -> None:
+    """
+    Applies changes to TensorRT hybrid context memory sharing.
+    Stops processing and force-unloads heavy TensorRT models whose loaded
+    context-sharing mode mismatches the new setting so they reload on demand.
+    """
+    enabled = bool(enabled)
+    # update_control() runs exec_function before updating main_window.control,
+    # so commit the new state first in case models reload immediately.
+    main_window.control["TrtContextMemorySharingToggle"] = enabled
+
+    models_processor = getattr(main_window, "models_processor", None)
+    if models_processor is None:
+        return
+
+    if getattr(models_processor, "provider_name", None) not in (
+        "TensorRT",
+        "TensorRT-Engine",
+    ):
+        return
+
+    has_mismatched = models_processor.has_mismatched_trt_shared_context_models(enabled)
+    models_loading = bool(getattr(models_processor, "_models_loading", ()))
+    if not has_mismatched and not models_loading:
+        return
+
+    video_processor = getattr(main_window, "video_processor", None)
+    if video_processor is not None:
+        video_processor.stop_processing()
+
+    unloaded = models_processor.unload_mismatched_trt_shared_context_models(enabled)
+    if unloaded:
+        common_widget_actions.update_gpu_memory_progressbar(main_window)
+
+
 def change_threads_number(main_window: "MainWindow", new_threads_number: int) -> None:
     main_window.video_processor.set_number_of_threads(new_threads_number)
     platform_support.empty_cache()
@@ -520,7 +557,9 @@ def handle_model_selection_change(
     common_widget_actions.update_gpu_memory_progressbar(main_window)
 
 
-def handle_face_detailer_change(main_window: "MainWindow", new_value, control_name: str):
+def handle_face_detailer_change(
+    main_window: "MainWindow", new_value, control_name: str
+):
     """Release the detailer slot when disabled or its model selection changes."""
     from app.processors.face_detailer import DETAILER_RESTORER_SLOT_ID
 
@@ -572,6 +611,7 @@ def handle_landmark_state_change(
             landmark_detectors.current_landmark_model_name = model_to_load
     common_widget_actions.update_gpu_memory_progressbar(main_window)
 
+
 def handle_landmark_model_selection_change(
     main_window: "MainWindow", new_detect_mode: str, control_name: str
 ) -> None:
@@ -616,6 +656,7 @@ def handle_landmark_model_selection_change(
     landmark_detectors.current_landmark_model_name = new_model_name
     common_widget_actions.update_gpu_memory_progressbar(main_window)
 
+
 def handle_frame_enhancer_state_change(
     main_window: "MainWindow", new_value: bool, control_name: str
 ) -> None:
@@ -635,6 +676,7 @@ def handle_frame_enhancer_state_change(
         # Unload the currently active model
         frame_enhancers.unload_models()
     common_widget_actions.update_gpu_memory_progressbar(main_window)
+
 
 def handle_enhancer_model_selection_change(
     main_window: "MainWindow", new_enhancer_type: str, control_name: str
@@ -659,6 +701,7 @@ def handle_enhancer_model_selection_change(
         # If disabled, just ensure the current model is cleared
         frame_enhancers.current_enhancer_model = new_model_name
     common_widget_actions.update_gpu_memory_progressbar(main_window)
+
 
 def _check_and_manage_face_editor_models(main_window: "MainWindow") -> None:
     """
@@ -717,6 +760,7 @@ def _check_and_manage_face_editor_models(main_window: "MainWindow") -> None:
         if recast_loaded:
             function_worker.unload_perform_recast_models()
         common_widget_actions.update_gpu_memory_progressbar(main_window)
+
 
 def handle_face_editor_button_click(main_window: "MainWindow"):
     """Called when the 'Edit Faces' button is clicked."""
@@ -1144,7 +1188,9 @@ def reset_face_editor_expression_params(main_window: "MainWindow"):
             common_widget_actions.refresh_frame(main_window)
 
 
-def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bool | None = None):
+def handle_auto_load_target_folder_toggle(
+    main_window: "MainWindow", enabled: bool | None = None
+):
     from app.ui.widgets.actions import list_view_actions
 
     # Widgets already hold the new UI value; control is updated after this handler.
@@ -1153,7 +1199,9 @@ def handle_auto_load_target_folder_toggle(main_window: "MainWindow", enabled: bo
         "AutoLoadTargetFolderRecursiveToggle"
     )
     if main_widget is not None:
-        main_window.control["AutoLoadTargetFolderToggle"] = bool(main_widget.isChecked())
+        main_window.control["AutoLoadTargetFolderToggle"] = bool(
+            main_widget.isChecked()
+        )
     if recursive_widget is not None:
         main_window.control["AutoLoadTargetFolderRecursiveToggle"] = bool(
             recursive_widget.isChecked()

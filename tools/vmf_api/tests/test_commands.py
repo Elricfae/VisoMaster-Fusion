@@ -23,7 +23,14 @@ class FakeJobs:
 
 def fake_mw(**vp):
     return SimpleNamespace(
-        video_processor=SimpleNamespace(**{"recording": False, "is_processing_segments": False, "processing": False, **vp}),
+        video_processor=SimpleNamespace(
+            **{
+                "recording": False,
+                "is_processing_segments": False,
+                "processing": False,
+                **vp,
+            }
+        ),
         job_processor=None,
         scan_issue_worker=None,
         is_batch_processing=False,
@@ -35,8 +42,12 @@ class BusyTests(unittest.TestCase):
     def setUp(self):
         # Outside VisoMaster: no app package, _scan_active falls back to scan_issue_worker.
         self.calls = []
-        commands.COMMANDS["_probe_write"] = commands.Command(lambda ctx: self.calls.append(1) or "done", write=True)
-        commands.COMMANDS["_probe_read"] = commands.Command(lambda ctx: "read", write=False)
+        commands.COMMANDS["_probe_write"] = commands.Command(
+            lambda ctx: self.calls.append(1) or "done", write=True
+        )
+        commands.COMMANDS["_probe_read"] = commands.Command(
+            lambda ctx: "read", write=False
+        )
 
     def tearDown(self):
         commands.COMMANDS.pop("_probe_write", None)
@@ -101,12 +112,30 @@ class BusyTests(unittest.TestCase):
         self.assertIn("loading target media", str(cm.exception))
 
     def test_write_flags(self):
-        for name in ("apply_config", "restore_backup", "set", "run_action", "load_workspace",
-                     "load_target_media", "load_input_faces", "start_recording", "process_jobs", "quit",
-                     "select_embedding"):
+        for name in (
+            "apply_config",
+            "restore_backup",
+            "set",
+            "run_action",
+            "load_workspace",
+            "load_target_media",
+            "load_input_faces",
+            "start_recording",
+            "process_jobs",
+            "quit",
+            "select_embedding",
+        ):
             self.assertTrue(commands.COMMANDS[name].write, name)
-        for name in ("status", "get_config", "diff", "export_config", "snapshot", "list_actions", "stop_recording",
-                     "list_embeddings"):
+        for name in (
+            "status",
+            "get_config",
+            "diff",
+            "export_config",
+            "snapshot",
+            "list_actions",
+            "stop_recording",
+            "list_embeddings",
+        ):
             self.assertFalse(commands.COMMANDS[name].write, name)
 
 
@@ -120,7 +149,9 @@ class TensorRTTests(unittest.TestCase):
         commands._TRT_JOB = {"running": True, "current": "GPENBFR512"}
         self.assertIn("TensorRT", commands.busy_reason(mw))
         with self.assertRaises(commands.CommandError):
-            commands.COMMANDS["apply_config"].run(commands.Context(mw), {"path": "x.json"})
+            commands.COMMANDS["apply_config"].run(
+                commands.Context(mw), {"path": "x.json"}
+            )
         # status / cancel stay available
         self.assertFalse(commands.COMMANDS["tensorrt_build_status"].write)
         self.assertFalse(commands.COMMANDS["cancel_tensorrt_build"].write)
@@ -130,7 +161,9 @@ class TensorRTTests(unittest.TestCase):
         mw.build_progress_dialog = SimpleNamespace(isVisible=lambda: True)
         self.assertIn("TensorRT", commands.busy_reason(mw))
         mw2 = fake_mw()
-        mw2.models_processor = SimpleNamespace(_trt_build_dialog=SimpleNamespace(isVisible=lambda: True))
+        mw2.models_processor = SimpleNamespace(
+            _trt_build_dialog=SimpleNamespace(isVisible=lambda: True)
+        )
         self.assertIn("TensorRT", commands.busy_reason(mw2))
 
     def test_new_build_dialog_signals_and_log_capture(self):
@@ -172,7 +205,9 @@ class TensorRTTests(unittest.TestCase):
             print(f"[INFO] Probe attempt 1 of 3 for {name}...")
             mp.build_dialog_log.emit(f"[INFO] Probe attempt 1 of 3 for {name}...")
             t = threading.Thread(
-                target=lambda: mp.build_dialog_log.emit("[ERROR] TensorRT tactic failure in subprocess")
+                target=lambda: mp.build_dialog_log.emit(
+                    "[ERROR] TensorRT tactic failure in subprocess"
+                )
             )
             t.start()
             t.join()
@@ -263,9 +298,13 @@ class TensorRTTests(unittest.TestCase):
         ctx = commands.Context(mw)
         listing = commands.COMMANDS["list_tensorrt_models"].run(ctx, {})
         engines = {r["model"]: r["engine"] for r in listing["models"]}
-        self.assertEqual(engines, {"ModelA": "built", "ModelB": "absent", "ModelC": "absent"})
+        self.assertEqual(
+            engines, {"ModelA": "built", "ModelB": "absent", "ModelC": "absent"}
+        )
         res = commands.COMMANDS["build_tensorrt_cache"].run(ctx, {"models": "all"})
-        self.assertEqual(res["queue"], ["ModelB", "ModelC"])  # A already built: never redone
+        self.assertEqual(
+            res["queue"], ["ModelB", "ModelC"]
+        )  # A already built: never redone
         self._wait_job()
         status = commands.COMMANDS["tensorrt_build_status"].run(ctx, {})
         self.assertEqual(status["counts"]["built"], 2)
@@ -285,25 +324,37 @@ class TensorRTTests(unittest.TestCase):
         mw = self._fake_trt_mw(tempfile.mkdtemp())
         ctx = commands.Context(mw)
         mp = mw.models_processor
-        first = commands.COMMANDS["build_tensorrt_cache"].run(ctx, {"models": ["ModelA"], "rebuild": True})
+        first = commands.COMMANDS["build_tensorrt_cache"].run(
+            ctx, {"models": ["ModelA"], "rebuild": True}
+        )
         self.assertFalse(first["started"])
         self.assertTrue(first["confirmation_required"])
         self.assertIn("DELETED", first["warning"])
         self.assertEqual(mp.log, [], "nothing may happen before confirmation")
         # wrong code or other model list -> new warning, still nothing done
         again = commands.COMMANDS["build_tensorrt_cache"].run(
-            ctx, {"models": ["ModelA", "ModelB"], "rebuild": True, "confirm": first["confirm"]})
+            ctx,
+            {
+                "models": ["ModelA", "ModelB"],
+                "rebuild": True,
+                "confirm": first["confirm"],
+            },
+        )
         self.assertTrue(again["confirmation_required"])
         self.assertEqual(mp.log, [])
         ok = commands.COMMANDS["build_tensorrt_cache"].run(
-            ctx, {"models": ["ModelA"], "rebuild": True, "confirm": first["confirm"]})
+            ctx, {"models": ["ModelA"], "rebuild": True, "confirm": first["confirm"]}
+        )
         self.assertTrue(ok["started"])
         self._wait_job()
         self.assertEqual([e[0] for e in mp.log], ["unload", "clean", "load"])
-        self.assertIsNotNone(mp.models["ModelA"], "A was loaded: it stays loaded after the rebuild")
+        self.assertIsNotNone(
+            mp.models["ModelA"], "A was loaded: it stays loaded after the rebuild"
+        )
         # a code is single-use
         reuse = commands.COMMANDS["build_tensorrt_cache"].run(
-            ctx, {"models": ["ModelA"], "rebuild": True, "confirm": first["confirm"]})
+            ctx, {"models": ["ModelA"], "rebuild": True, "confirm": first["confirm"]}
+        )
         self.assertTrue(reuse["confirmation_required"])
 
     def test_known_lazy_models_are_skipped_and_announced(self):
@@ -314,19 +365,26 @@ class TensorRTTests(unittest.TestCase):
         mp.models_pending_build = {"ModelC"}  # probed earlier, dynamic shape, no engine
         ctx = commands.Context(mw)
         listing = commands.COMMANDS["list_tensorrt_models"].run(ctx, {})
-        self.assertEqual({r["model"]: r["engine"] for r in listing["models"]}["ModelC"], commands.LAZY_LABEL)
+        self.assertEqual(
+            {r["model"]: r["engine"] for r in listing["models"]}["ModelC"],
+            commands.LAZY_LABEL,
+        )
         res = commands.COMMANDS["build_tensorrt_cache"].run(ctx, {"models": "all"})
         self.assertEqual(res["queue"], ["ModelB"])
         self.assertEqual(res["lazy_known"], ["ModelC"])
         self._wait_job()
-        self.assertNotIn(("load", "ModelC"), mp.log, "a known lazy model is not probed again")
+        self.assertNotIn(
+            ("load", "ModelC"), mp.log, "a known lazy model is not probed again"
+        )
         # only lazy left: nothing started, but it is reported
         res = commands.COMMANDS["build_tensorrt_cache"].run(ctx, {"models": ["ModelC"]})
         self.assertFalse(res["started"])
         self.assertEqual(res["lazy_known"], ["ModelC"])
         self.assertIn("first use", res["message"])
         # rebuild still includes it (after a driver update its probe must run again)
-        res = commands.COMMANDS["build_tensorrt_cache"].run(ctx, {"models": ["ModelC"], "rebuild": True})
+        res = commands.COMMANDS["build_tensorrt_cache"].run(
+            ctx, {"models": ["ModelC"], "rebuild": True}
+        )
         self.assertTrue(res["confirmation_required"])
         self.assertEqual(res["models"], ["ModelC"])
 
@@ -348,10 +406,14 @@ class TensorRTTests(unittest.TestCase):
 
         mp.load_model = failing_load
         ctx = commands.Context(mw)
-        commands.COMMANDS["build_tensorrt_cache"].run(ctx, {"models": ["ModelB", "ModelC"]})
+        commands.COMMANDS["build_tensorrt_cache"].run(
+            ctx, {"models": ["ModelB", "ModelC"]}
+        )
         self._wait_job()
         st = commands.COMMANDS["tensorrt_build_status"].run(ctx, {})
-        self.assertEqual(st["counts"]["failed"], 2, "a failure does not stop the next models")
+        self.assertEqual(
+            st["counts"]["failed"], 2, "a failure does not stop the next models"
+        )
         item = st["items"][0]
         self.assertEqual(item["timeouts"], 3)
         self.assertEqual(item["attempt"], "3/3")
@@ -364,14 +426,28 @@ class TensorRTTests(unittest.TestCase):
         res = commands.COMMANDS["build_tensorrt_cache"].run(ctx, {"models": "failed"})
         self.assertEqual(res["queue"], ["ModelB", "ModelC"])
         self._wait_job()
-        self.assertEqual(commands.COMMANDS["tensorrt_build_status"].run(ctx, {})["counts"]["built"], 2)
+        self.assertEqual(
+            commands.COMMANDS["tensorrt_build_status"].run(ctx, {})["counts"]["built"],
+            2,
+        )
         # console capture removed once the build thread is done
         self.assertNotIsInstance(sys.stdout, commands._ThreadTee)
         self.assertNotIsInstance(sys.stderr, commands._ThreadTee)
 
     def test_trt_provider_detection(self):
-        self.assertTrue(commands._trt_active(SimpleNamespace(providers=[("TensorrtExecutionProvider", {}), "CPUExecutionProvider"])))
-        self.assertFalse(commands._trt_active(SimpleNamespace(providers=["CPUExecutionProvider"])))
+        self.assertTrue(
+            commands._trt_active(
+                SimpleNamespace(
+                    providers=[
+                        ("TensorrtExecutionProvider", {}),
+                        "CPUExecutionProvider",
+                    ]
+                )
+            )
+        )
+        self.assertFalse(
+            commands._trt_active(SimpleNamespace(providers=["CPUExecutionProvider"]))
+        )
 
 
 class DestructiveActionTests(unittest.TestCase):
@@ -379,9 +455,15 @@ class DestructiveActionTests(unittest.TestCase):
         commands._ACTION_CONFIRM.clear()
 
     def test_detection(self):
-        for name in ("clearTargetFacesButton", "dropAllIssueFramesButton", "actionEdit_ResetParameters"):
+        for name in (
+            "clearTargetFacesButton",
+            "dropAllIssueFramesButton",
+            "actionEdit_ResetParameters",
+        ):
             self.assertTrue(commands._is_destructive(name, ""), name)
-        self.assertTrue(commands._is_destructive("someFutureButton", "Delete all markers"))
+        self.assertTrue(
+            commands._is_destructive("someFutureButton", "Delete all markers")
+        )
         self.assertFalse(commands._is_destructive("clearMemoryButton", "Clear VRAM"))
         self.assertFalse(commands._is_destructive("swapfacesButton", "Swap Faces"))
         self.assertFalse(commands._is_destructive("buttonMediaPlay", ""))
@@ -392,31 +474,47 @@ class DestructiveActionTests(unittest.TestCase):
         self.assertFalse(commands._is_destructive("someDropdownButton", "Choose"))
         # search box reset, view toggles, marker menu
         self.assertFalse(commands._is_destructive("targetVideosSearchResetButton", ""))
-        self.assertFalse(commands._is_destructive("actionViewToggle_faces", "Faces / Embeddings"))
+        self.assertFalse(
+            commands._is_destructive("actionViewToggle_faces", "Faces / Embeddings")
+        )
         self.assertFalse(commands._is_destructive("addMarkerButton", ""))
         # still caught
-        self.assertTrue(commands._is_destructive("clearDroppedFramesButton", "Restore Dropped"))
-        self.assertTrue(commands._is_destructive("futureButton", "Removes all scan markers"))
+        self.assertTrue(
+            commands._is_destructive("clearDroppedFramesButton", "Restore Dropped")
+        )
+        self.assertTrue(
+            commands._is_destructive("futureButton", "Removes all scan markers")
+        )
         self.assertTrue(commands._is_destructive("x", "Cleared"))
 
     def test_modal_kinds(self):
-        help_link = ("QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(p))\n"
-                     "common_widget_actions.create_and_show_messagebox(main_window, 'Not Found')")
+        help_link = (
+            "QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(p))\n"
+            "common_widget_actions.create_and_show_messagebox(main_window, 'Not Found')"
+        )
         self.assertEqual(commands._modal_kind(help_link), "external")
-        self.assertEqual(commands._modal_kind("menu = QMenu(main_window)\nmenu.exec(pos)"), "menu")
-        self.assertEqual(commands._modal_kind("QtWidgets.QMessageBox.question(main_window)"), "dialog")
+        self.assertEqual(
+            commands._modal_kind("menu = QMenu(main_window)\nmenu.exec(pos)"), "menu"
+        )
+        self.assertEqual(
+            commands._modal_kind("QtWidgets.QMessageBox.question(main_window)"),
+            "dialog",
+        )
         self.assertIsNone(commands._modal_kind("main_window.searchBox.clear()"))
 
     def test_spec_tuple_slots(self):
-        src = '''(
+        src = """(
             "clearScanResultsButton",
             "Clear Issues",
             "Removes the current scan issue markers.\\n"
             "Does not affect dropped frames.",
             lambda: clear_scan_results(main_window),
             "cleanup",
-        ),'''
-        self.assertEqual(commands._SPEC_SLOT_RE.findall(src), [("clearScanResultsButton", "clear_scan_results")])
+        ),"""
+        self.assertEqual(
+            commands._SPEC_SLOT_RE.findall(src),
+            [("clearScanResultsButton", "clear_scan_results")],
+        )
 
     def test_labels_never_leak_paths(self):
         card = "clip_holiday.mp4\n1920x1080 - 245.3 MB\nD:\\Videos\\Perso\\clip_holiday.mp4"
@@ -424,32 +522,54 @@ class DestructiveActionTests(unittest.TestCase):
         self.assertNotIn("holiday", commands._safe_label(card))
         self.assertNotIn("home", commands._safe_label("Open /home/user/videos/x.mp4"))
         self.assertEqual(commands._safe_label("&Swap Faces"), "Swap Faces")
-        self.assertEqual(commands._safe_label("Faces / Embeddings"), "Faces / Embeddings")
+        self.assertEqual(
+            commands._safe_label("Faces / Embeddings"), "Faces / Embeddings"
+        )
 
     def test_preset_apply_needs_confirmation(self):
         self.assertTrue(commands._is_destructive("applyPresetButton", "Apply"))
         self.assertIn("apply_config", commands.USE_INSTEAD["applyPresetButton"])
 
     def test_last_workspace_actions_point_to_api(self):
-        self.assertEqual(commands.DIALOG_ACTIONS["actionSave_LastWorkspace"], "save_workspace")
-        self.assertEqual(commands.DIALOG_ACTIONS["actionReset_to_LastWorkspace"], "load_workspace")
+        self.assertEqual(
+            commands.DIALOG_ACTIONS["actionSave_LastWorkspace"], "save_workspace"
+        )
+        self.assertEqual(
+            commands.DIALOG_ACTIONS["actionReset_to_LastWorkspace"], "load_workspace"
+        )
         self.assertIn("backup", commands.MANUAL_REASONS["actionSave_LastWorkspace"])
 
     def test_privacy_and_kv_reasons(self):
-        self.assertTrue(commands._privacy_reserved("targetVideosFilterWebcamsCheckBox", "Webcams"))
-        self.assertTrue(commands._privacy_reserved("someButton", "Start Virtual Camera"))
+        self.assertTrue(
+            commands._privacy_reserved("targetVideosFilterWebcamsCheckBox", "Webcams")
+        )
+        self.assertTrue(
+            commands._privacy_reserved("someButton", "Start Virtual Camera")
+        )
         self.assertFalse(commands._privacy_reserved("swapfacesButton", "Swap Faces"))
-        self.assertIn("K/V maps", commands._reserved_reason("purgeKVMapsButton", "Purge"))
-        self.assertIn("embeddings", commands._reserved_reason("openEmbeddingButton", ""))
+        self.assertIn(
+            "K/V maps", commands._reserved_reason("purgeKVMapsButton", "Purge")
+        )
+        self.assertIn(
+            "embeddings", commands._reserved_reason("openEmbeddingButton", "")
+        )
 
     def test_labels_cosmetics(self):
-        self.assertEqual(commands._split_label("Fullscreen\tF11"), ("Fullscreen", "F11"))
+        self.assertEqual(
+            commands._split_label("Fullscreen\tF11"), ("Fullscreen", "F11")
+        )
         self.assertEqual(commands._split_label("Swap Faces"), ("Swap Faces", ""))
-        self.assertEqual(commands._label_from_name("frameAdvanceButton"), "Frame Advance")
-        self.assertEqual(commands._label_from_name("sortTargetVideosDirectionButton"), "Sort Target Videos Direction")
+        self.assertEqual(
+            commands._label_from_name("frameAdvanceButton"), "Frame Advance"
+        )
+        self.assertEqual(
+            commands._label_from_name("sortTargetVideosDirectionButton"),
+            "Sort Target Videos Direction",
+        )
 
     def test_media_check(self):
         from types import SimpleNamespace as NS
+
         vp = lambda **k: NS(video_processor=NS(**k))
         self.assertTrue(commands._media_ok(vp(media_path="x.mp4", file_type="video")))
         self.assertTrue(commands._media_ok(vp(media_path="x.png", file_type="image")))
@@ -457,16 +577,24 @@ class DestructiveActionTests(unittest.TestCase):
         self.assertFalse(commands._media_ok(vp(media_path=None, file_type=None)))
 
     def test_confirmation_flow(self):
-        first = commands._action_confirmation("clearTargetFacesButton", "Clear Target Faces", None)
+        first = commands._action_confirmation(
+            "clearTargetFacesButton", "Clear Target Faces", None
+        )
         self.assertTrue(first["confirmation_required"])
         self.assertIn("erases data", first["warning"])
         code = first["confirm"]
         # a code is bound to its action
         other = commands._action_confirmation("dropAllIssueFramesButton", "", code)
         self.assertTrue(other["confirmation_required"])
-        self.assertIsNone(commands._action_confirmation("clearTargetFacesButton", "", code))
+        self.assertIsNone(
+            commands._action_confirmation("clearTargetFacesButton", "", code)
+        )
         # single use
-        self.assertTrue(commands._action_confirmation("clearTargetFacesButton", "", code)["confirmation_required"])
+        self.assertTrue(
+            commands._action_confirmation("clearTargetFacesButton", "", code)[
+                "confirmation_required"
+            ]
+        )
 
 
 class EmbeddingPolicyTests(unittest.TestCase):
@@ -475,13 +603,19 @@ class EmbeddingPolicyTests(unittest.TestCase):
             self.assertTrue(commands._embedding_reserved(name, ""), name)
         # future controls caught by name or label
         self.assertTrue(commands._embedding_reserved("deleteEmbeddingButton", ""))
-        self.assertTrue(commands._embedding_reserved("someButton", "Merge selected faces"))
+        self.assertTrue(
+            commands._embedding_reserved("someButton", "Merge selected faces")
+        )
         self.assertTrue(commands._embedding_reserved("kvMapButton", ""))
         self.assertFalse(commands._embedding_reserved("swapfacesButton", "Swap Faces"))
         self.assertFalse(commands._embedding_reserved("buttonMediaPlay", ""))
         # showing/hiding the "Faces / Embeddings" panel touches no embedding
-        self.assertFalse(commands._embedding_reserved("actionViewToggle_faces", "Faces / Embeddings"))
-        self.assertFalse(commands._embedding_reserved("facesPanelCheckBox", "Faces / Embeddings"))
+        self.assertFalse(
+            commands._embedding_reserved("actionViewToggle_faces", "Faces / Embeddings")
+        )
+        self.assertFalse(
+            commands._embedding_reserved("facesPanelCheckBox", "Faces / Embeddings")
+        )
 
     def test_no_embedding_mutation_commands(self):
         # Only list + select are exposed.
@@ -492,16 +626,27 @@ class EmbeddingPolicyTests(unittest.TestCase):
 class RecordingTrackingTests(unittest.TestCase):
     def setUp(self):
         import tempfile
+
         commands._REC.clear()
         commands._OUTPUTS.clear()
         self.dir = Path(tempfile.mkdtemp(prefix="vmf_rec_"))
-        self.vp = SimpleNamespace(recording=False, is_processing_segments=False, processing=False,
-                                  frames_written=0, next_frame_to_display=0, max_frame_number=99,
-                                  fps=25.0, media_path="C:/x/clip.mp4")
-        self.mw = SimpleNamespace(video_processor=self.vp, control={"OutputMediaFolder": str(self.dir)})
+        self.vp = SimpleNamespace(
+            recording=False,
+            is_processing_segments=False,
+            processing=False,
+            frames_written=0,
+            next_frame_to_display=0,
+            max_frame_number=99,
+            fps=25.0,
+            media_path="C:/x/clip.mp4",
+        )
+        self.mw = SimpleNamespace(
+            video_processor=self.vp, control={"OutputMediaFolder": str(self.dir)}
+        )
 
     def tearDown(self):
         import shutil
+
         commands._REC.clear()
         commands._OUTPUTS.clear()
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -562,7 +707,10 @@ class RecordingTrackingTests(unittest.TestCase):
 
     def test_recording_started_from_ui_is_tracked(self):
         self.vp.recording = True
-        self.vp.frames_written, self.vp.next_frame_to_display = 10, 60  # started at frame 50
+        self.vp.frames_written, self.vp.next_frame_to_display = (
+            10,
+            60,
+        )  # started at frame 50
         rec = commands._rec_update(self.mw)
         self.assertEqual(rec["started_by"], "visomaster ui")
         self.assertEqual(rec["start_frame"], 50)
@@ -575,20 +723,53 @@ class RecordingTrackingTests(unittest.TestCase):
 class SchemaSearchTests(unittest.TestCase):
     def setUp(self):
         E = commands.schema_mod.Entry
-        self.schema = commands.schema_mod.Schema(entries={
-            "nThreadsSlider": E("nThreadsSlider", "control", "SETTINGS_LAYOUT_DATA", "General", "slider"),
-            "nStreamSlider": E("nStreamSlider", "control", "SETTINGS_LAYOUT_DATA", "General", "slider"),
-            "FaceRestorerEnableToggle": E("FaceRestorerEnableToggle", "parameter", "COMMON", "Restorer", "toggle"),
-            "HeadYawSlider": E("HeadYawSlider", "parameter", "FACE_EDITOR_LAYOUT_DATA", "", "slider"),
-        })
+        self.schema = commands.schema_mod.Schema(
+            entries={
+                "nThreadsSlider": E(
+                    "nThreadsSlider",
+                    "control",
+                    "SETTINGS_LAYOUT_DATA",
+                    "General",
+                    "slider",
+                ),
+                "nStreamSlider": E(
+                    "nStreamSlider",
+                    "control",
+                    "SETTINGS_LAYOUT_DATA",
+                    "General",
+                    "slider",
+                ),
+                "FaceRestorerEnableToggle": E(
+                    "FaceRestorerEnableToggle",
+                    "parameter",
+                    "COMMON",
+                    "Restorer",
+                    "toggle",
+                ),
+                "HeadYawSlider": E(
+                    "HeadYawSlider",
+                    "parameter",
+                    "FACE_EDITOR_LAYOUT_DATA",
+                    "",
+                    "slider",
+                ),
+            }
+        )
 
     def test_find(self):
-        self.assertEqual(commands._schema_find(self.schema, "nThreadsSlider")[0], "nThreadsSlider")
+        self.assertEqual(
+            commands._schema_find(self.schema, "nThreadsSlider")[0], "nThreadsSlider"
+        )
         exact, matches, _ = commands._schema_find(self.schema, "thread")
         self.assertIsNone(exact)
         self.assertEqual(matches, ["nThreadsSlider"])
-        self.assertEqual(commands._schema_find(self.schema, "restorer enable")[1], ["FaceRestorerEnableToggle"])
-        self.assertIn("nThreadsSlider", commands._schema_find(self.schema, "nThredsSlider")[2])
+        self.assertEqual(
+            commands._schema_find(self.schema, "restorer enable")[1],
+            ["FaceRestorerEnableToggle"],
+        )
+        self.assertIn(
+            "nThreadsSlider", commands._schema_find(self.schema, "nThredsSlider")[2]
+        )
 
     def test_groups(self):
         g = commands._schema_groups(self.schema)
@@ -605,25 +786,47 @@ class SchemaMetadataTests(unittest.TestCase):
 
     def test_depends_on(self):
         d = commands.schema_mod.depends_on
-        self.assertEqual(d({"parentToggle": "A & B"}), {"all": [{"key": "A", "value": True}, {"key": "B", "value": True}]})
-        self.assertEqual(d({"parentToggle": "A | B"}), {"any": [{"key": "A", "value": True}, {"key": "B", "value": True}]})
-        self.assertEqual(d({"parentToggle": "A", "requiredToggleValue": False}), {"all": [{"key": "A", "value": False}]})
-        self.assertEqual(d({"parentSelection": "S", "requiredSelectionValue": "X"}), {"all": [{"key": "S", "value": "X"}]})
+        self.assertEqual(
+            d({"parentToggle": "A & B"}),
+            {"all": [{"key": "A", "value": True}, {"key": "B", "value": True}]},
+        )
+        self.assertEqual(
+            d({"parentToggle": "A | B"}),
+            {"any": [{"key": "A", "value": True}, {"key": "B", "value": True}]},
+        )
+        self.assertEqual(
+            d({"parentToggle": "A", "requiredToggleValue": False}),
+            {"all": [{"key": "A", "value": False}]},
+        )
+        self.assertEqual(
+            d({"parentSelection": "S", "requiredSelectionValue": "X"}),
+            {"all": [{"key": "S", "value": "X"}]},
+        )
         self.assertIsNone(d({}))
 
     def test_real_entries_have_ui_metadata(self):
         e = self.schema.get("FaceRestorerTypeSelection")
         self.assertTrue(e.label)
         self.assertEqual(e.tab, "Common")
-        self.assertEqual(e.depends_on, {"all": [{"key": "FaceRestorerEnableToggle", "value": True}]})
+        self.assertEqual(
+            e.depends_on, {"all": [{"key": "FaceRestorerEnableToggle", "value": True}]}
+        )
         self.assertTrue(sum(1 for x in self.schema.entries.values() if x.label) > 300)
 
     def test_search_by_ui_label(self):
         _, m, _ = commands._schema_find(self.schema, "pipeline position")
         self.assertTrue(m)
-        self.assertTrue(all("pipeline position" in (self.schema.get(k).label or "").lower() or "pipeline" in k.lower() for k in m))
+        self.assertTrue(
+            all(
+                "pipeline position" in (self.schema.get(k).label or "").lower()
+                or "pipeline" in k.lower()
+                for k in m
+            )
+        )
         _, m, _ = commands._schema_find(self.schema, "restore eyes")
-        self.assertTrue(any((self.schema.get(k).label or "") == "Restore Eyes" for k in m))
+        self.assertTrue(
+            any((self.schema.get(k).label or "") == "Restore Eyes" for k in m)
+        )
         self.assertIn("nThreadsSlider", commands._schema_find(self.schema, "thread")[1])
 
 
@@ -636,7 +839,9 @@ class SwapAndVramTests(unittest.TestCase):
             return self.c
 
     def test_swap_state(self):
-        face = SimpleNamespace(assigned_input_faces={}, assigned_merged_embeddings={"111": 1})
+        face = SimpleNamespace(
+            assigned_input_faces={}, assigned_merged_embeddings={"111": 1}
+        )
         mw = SimpleNamespace(swapfacesButton=self.Btn(False), target_faces={"f1": face})
         st = commands._swap_state(mw)
         self.assertFalse(st["enabled"])
@@ -648,9 +853,19 @@ class SwapAndVramTests(unittest.TestCase):
         self.assertIn("no target face has a source", commands._swap_state(mw)["note"])
 
     def test_vram(self):
-        mw = SimpleNamespace(models_processor=SimpleNamespace(get_gpu_memory=lambda: (6144, 24576)))
-        self.assertEqual(commands._vram(mw), {"used_mb": 6144, "total_mb": 24576, "percent": 25.0})
-        self.assertIsNone(commands._vram(SimpleNamespace(models_processor=SimpleNamespace(get_gpu_memory=lambda: (0, 0)))))
+        mw = SimpleNamespace(
+            models_processor=SimpleNamespace(get_gpu_memory=lambda: (6144, 24576))
+        )
+        self.assertEqual(
+            commands._vram(mw), {"used_mb": 6144, "total_mb": 24576, "percent": 25.0}
+        )
+        self.assertIsNone(
+            commands._vram(
+                SimpleNamespace(
+                    models_processor=SimpleNamespace(get_gpu_memory=lambda: (0, 0))
+                )
+            )
+        )
         self.assertIsNone(commands._vram(SimpleNamespace()))
 
 
@@ -662,8 +877,14 @@ class NamedBackupTests(unittest.TestCase):
             commands._backup_label("  ")
 
     def test_find_latest_by_name(self):
-        names = ["20261017-120000-baseline.json", "20261016-120000-baseline.json", "20261016-110000-other.json"]
-        self.assertEqual(commands._find_backup(names, "baseline"), "20261017-120000-baseline.json")
+        names = [
+            "20261017-120000-baseline.json",
+            "20261016-120000-baseline.json",
+            "20261016-110000-other.json",
+        ]
+        self.assertEqual(
+            commands._find_backup(names, "baseline"), "20261017-120000-baseline.json"
+        )
         self.assertIsNone(commands._find_backup(names, "missing"))
 
 
@@ -672,8 +893,10 @@ class ParameterExecTests(unittest.TestCase):
         self.calls = []
         self._saved = commands._PARAM_SPECS
         commands._PARAM_SPECS = {
-            "ClipEnableToggle": {"exec_function": lambda mw, v, *a: self.calls.append(("clip", v, a)),
-                                 "exec_function_args": ["x"]},
+            "ClipEnableToggle": {
+                "exec_function": lambda mw, v, *a: self.calls.append(("clip", v, a)),
+                "exec_function_args": ["x"],
+            },
             "BrokenToggle": {"exec_function": lambda mw, v: 1 / 0},
             "PlainSlider": {},
         }
@@ -682,12 +905,17 @@ class ParameterExecTests(unittest.TestCase):
         commands._PARAM_SPECS = self._saved
 
     def test_runs_only_changed_keys(self):
-        errors = commands._run_param_exec(None, {"ClipEnableToggle": False, "PlainSlider": 1},
-                                          {"ClipEnableToggle": True, "PlainSlider": 2})
+        errors = commands._run_param_exec(
+            None,
+            {"ClipEnableToggle": False, "PlainSlider": 1},
+            {"ClipEnableToggle": True, "PlainSlider": 2},
+        )
         self.assertEqual(errors, [])
         self.assertEqual(self.calls, [("clip", True, ("x",))])
         self.calls.clear()
-        commands._run_param_exec(None, {"ClipEnableToggle": True}, {"ClipEnableToggle": True})
+        commands._run_param_exec(
+            None, {"ClipEnableToggle": True}, {"ClipEnableToggle": True}
+        )
         self.assertEqual(self.calls, [])
 
     def test_errors_are_reported(self):
@@ -696,30 +924,73 @@ class ParameterExecTests(unittest.TestCase):
         self.assertIn("BrokenToggle: ZeroDivisionError", errors[0])
 
     def test_unmet(self):
-        mw = SimpleNamespace(control={"A": True, "B": False}, selected_target_face_id=None, target_faces={},
-                             current_widget_parameters={"P": "X"})
+        mw = SimpleNamespace(
+            control={"A": True, "B": False},
+            selected_target_face_id=None,
+            target_faces={},
+            current_widget_parameters={"P": "X"},
+        )
         self.assertEqual(commands._unmet(mw, None), [])
-        self.assertEqual(commands._unmet(mw, {"all": [{"key": "A", "value": True}]}), [])
-        self.assertEqual(commands._unmet(mw, {"all": [{"key": "B", "value": True}]}), [{"key": "B", "value": True}])
+        self.assertEqual(
+            commands._unmet(mw, {"all": [{"key": "A", "value": True}]}), []
+        )
+        self.assertEqual(
+            commands._unmet(mw, {"all": [{"key": "B", "value": True}]}),
+            [{"key": "B", "value": True}],
+        )
         anyof = [{"key": "A", "value": False}, {"key": "B", "value": True}]
         self.assertEqual(commands._unmet(mw, {"any": anyof}), [{"any_of": anyof}])
-        self.assertEqual(commands._unmet(mw, {"any": anyof + [{"key": "P", "value": "X"}]}), [])
+        self.assertEqual(
+            commands._unmet(mw, {"any": anyof + [{"key": "P", "value": "X"}]}), []
+        )
 
 
 class SchemaSwitchesTests(unittest.TestCase):
     def test_switches(self):
         E = commands.schema_mod.Entry
         on = lambda *keys: {"any": [{"key": k, "value": True} for k in keys]}  # noqa: E731
-        schema = commands.schema_mod.Schema(entries={
-            "DenoiserBeforeToggle": E("DenoiserBeforeToggle", "control", "L", "Denoiser", "toggle", label="Before"),
-            "DenoiserAfterToggle": E("DenoiserAfterToggle", "control", "L", "Denoiser", "toggle", label="After"),
-            "DenoiserSteps": E("DenoiserSteps", "control", "L", "Denoiser", "slider",
-                               depends_on=on("DenoiserBeforeToggle", "DenoiserAfterToggle")),
-            "DenoiserSub": E("DenoiserSub", "control", "L", "Denoiser", "toggle", depends_on=on("DenoiserBeforeToggle")),
-            "Lonely": E("Lonely", "control", "L", "Other", "toggle"),
-        })
+        schema = commands.schema_mod.Schema(
+            entries={
+                "DenoiserBeforeToggle": E(
+                    "DenoiserBeforeToggle",
+                    "control",
+                    "L",
+                    "Denoiser",
+                    "toggle",
+                    label="Before",
+                ),
+                "DenoiserAfterToggle": E(
+                    "DenoiserAfterToggle",
+                    "control",
+                    "L",
+                    "Denoiser",
+                    "toggle",
+                    label="After",
+                ),
+                "DenoiserSteps": E(
+                    "DenoiserSteps",
+                    "control",
+                    "L",
+                    "Denoiser",
+                    "slider",
+                    depends_on=on("DenoiserBeforeToggle", "DenoiserAfterToggle"),
+                ),
+                "DenoiserSub": E(
+                    "DenoiserSub",
+                    "control",
+                    "L",
+                    "Denoiser",
+                    "toggle",
+                    depends_on=on("DenoiserBeforeToggle"),
+                ),
+                "Lonely": E("Lonely", "control", "L", "Other", "toggle"),
+            }
+        )
         g = commands._schema_groups(schema)
-        self.assertEqual(g["Denoiser"]["switches"], {"DenoiserAfterToggle": "After", "DenoiserBeforeToggle": "Before"})
+        self.assertEqual(
+            g["Denoiser"]["switches"],
+            {"DenoiserAfterToggle": "After", "DenoiserBeforeToggle": "Before"},
+        )
         self.assertNotIn("switches", g["Other"])
 
     def test_real_denoiser_switches(self):
@@ -736,12 +1007,28 @@ class SchemaSwitchesTests(unittest.TestCase):
     def test_dynamic_options_and_group(self):
         from types import SimpleNamespace
 
-        schema = commands.schema_mod.from_layouts([
-            ("SWAPPER_LAYOUT_DATA", {"Swap": {"DFMModelSelection": {
-                "label": "DFM Model", "options": lambda m: m.get_selection_values(),
-                "default": lambda m: m.get_default_value()}}}, "parameter"),
-            ("FACE_EDITOR_LAYOUT_DATA", {"": {"FaceEditorEnableToggle": {"label": "Enable"}}}, "parameter"),
-        ])
+        schema = commands.schema_mod.from_layouts(
+            [
+                (
+                    "SWAPPER_LAYOUT_DATA",
+                    {
+                        "Swap": {
+                            "DFMModelSelection": {
+                                "label": "DFM Model",
+                                "options": lambda m: m.get_selection_values(),
+                                "default": lambda m: m.get_default_value(),
+                            }
+                        }
+                    },
+                    "parameter",
+                ),
+                (
+                    "FACE_EDITOR_LAYOUT_DATA",
+                    {"": {"FaceEditorEnableToggle": {"label": "Enable"}}},
+                    "parameter",
+                ),
+            ]
+        )
         e = schema.get("DFMModelSelection")
         self.assertIsNone(e.default)
         self.assertTrue(e.options_note)
@@ -753,8 +1040,11 @@ class SchemaSwitchesTests(unittest.TestCase):
             def itemText(self, i):
                 return ["a.dfm", "b.dfm"][i]
 
-        ctx = SimpleNamespace(schema=schema, rules=SimpleNamespace(reason=lambda k, s: None),
-                              mw=SimpleNamespace(parameter_widgets={"DFMModelSelection": Combo()}))
+        ctx = SimpleNamespace(
+            schema=schema,
+            rules=SimpleNamespace(reason=lambda k, s: None),
+            mw=SimpleNamespace(parameter_widgets={"DFMModelSelection": Combo()}),
+        )
         out = commands.cmd_schema(ctx, group="*")
         self.assertEqual(out["DFMModelSelection"]["options"], ["a.dfm", "b.dfm"])
         self.assertEqual(out["FaceEditorEnableToggle"]["group"], "Face Editor")
@@ -772,6 +1062,7 @@ class PowerThrottlingTests(unittest.TestCase):
         else:
             self.assertFalse(res["applied"])
 
+
 class ConsoleTapTests(unittest.TestCase):
     def test_keeps_warnings_only(self):
         import io as _io
@@ -781,29 +1072,46 @@ class ConsoleTapTests(unittest.TestCase):
         tap = commands._ConsoleTap(buf)
         t0 = _time.time() - 0.01
         tap.write("[INFO] fine\n")
-        tap.write("[WARN] Tail-drain stalled for too long (8.0s). Forcing finalization.")
+        tap.write(
+            "[WARN] Tail-drain stalled for too long (8.0s). Forcing finalization."
+        )
         tap.write("\n")
         self.assertIn("[INFO] fine", buf.getvalue())
         got = commands._console_since(t0)
-        self.assertEqual(got[-1], "[WARN] Tail-drain stalled for too long (8.0s). Forcing finalization.")
+        self.assertEqual(
+            got[-1],
+            "[WARN] Tail-drain stalled for too long (8.0s). Forcing finalization.",
+        )
         self.assertFalse(any("[INFO]" in g for g in got))
 
 
 class TensorRTSummaryTests(unittest.TestCase):
     def test_summary(self):
-        s = commands._trt_summary([
-            {"model": "A", "status": "built", "seconds": 61.0},
-            {"model": "B", "status": "failed", "seconds": 900.0, "error": "timeout", "timeouts": 3},
-            {"model": "C", "status": "skipped", "reason": "already built"},
-            {"model": "D", "status": "lazy"},
-        ])
+        s = commands._trt_summary(
+            [
+                {"model": "A", "status": "built", "seconds": 61.0},
+                {
+                    "model": "B",
+                    "status": "failed",
+                    "seconds": 900.0,
+                    "error": "timeout",
+                    "timeouts": 3,
+                },
+                {"model": "C", "status": "skipped", "reason": "already built"},
+                {"model": "D", "status": "lazy"},
+            ]
+        )
         self.assertEqual(s["built"], [{"model": "A", "build_time_s": 61.0}])
         self.assertEqual(s["failed"][0]["error"], "timeout")
         self.assertEqual(s["skipped"], [{"model": "C", "reason": "already built"}])
         self.assertEqual(s["lazy"][0]["model"], "D")
         self.assertEqual(s["total_build_time_s"], 961.0)
         self.assertFalse(s["success"])
-        self.assertTrue(commands._trt_summary([{"model": "A", "status": "built", "seconds": 1}])["success"])
+        self.assertTrue(
+            commands._trt_summary([{"model": "A", "status": "built", "seconds": 1}])[
+                "success"
+            ]
+        )
 
 
 class ReadinessTests(unittest.TestCase):
@@ -814,14 +1122,21 @@ class ReadinessTests(unittest.TestCase):
     def mw(self, **wpm):
         mw = fake_mw()
         mw.video_processor.worker_pool_manager = SimpleNamespace(
-            **{"pending_single_frame_request": None, "current_single_frame_worker": None, **wpm})
+            **{
+                "pending_single_frame_request": None,
+                "current_single_frame_worker": None,
+                **wpm,
+            }
+        )
         return mw
 
     def test_idle_is_ready(self):
         self.assertEqual(commands._readiness(self.mw()), {"ready": True})
 
     def test_preview_and_playback(self):
-        r = commands._readiness(self.mw(pending_single_frame_request={"frame_number": 0}))
+        r = commands._readiness(
+            self.mw(pending_single_frame_request={"frame_number": 0})
+        )
         self.assertFalse(r["ready"])
         self.assertIn("computing the preview frame", r["waiting_for"])
         mw = self.mw()
@@ -887,7 +1202,9 @@ class LaunchEnvTests(unittest.TestCase):
 
         old = dict(os.environ)
         try:
-            os.environ.update(VIRTUAL_ENV="x", PYTHONPATH="y", QT_QPA_PLATFORM="windows")
+            os.environ.update(
+                VIRTUAL_ENV="x", PYTHONPATH="y", QT_QPA_PLATFORM="windows"
+            )
             env = vmf_cli._launch_env(True, 9999)
             self.assertEqual(env["QT_QPA_PLATFORM"], "offscreen")
             self.assertEqual((env["VMF_API"], env["VMF_API_PORT"]), ("1", "9999"))
@@ -909,16 +1226,24 @@ class LazyTensorRTTests(unittest.TestCase):
         commands._BUILDS["done"].clear()
         commands._LOADS["inflight"].clear()
         t0 = time.time()
-        commands._build_started("Finalizing TensorRT Build", "Performing first-run inference for:\nYoloFace8n\n\nThis may take")
+        commands._build_started(
+            "Finalizing TensorRT Build",
+            "Performing first-run inference for:\nYoloFace8n\n\nThis may take",
+        )
         mw = fake_mw()
         r = commands._readiness(mw)
         self.assertFalse(r["ready"])
         self.assertEqual(r["tensorrt_building"][0]["model"], "YoloFace8n")
-        self.assertIn("TensorRT: Finalizing TensorRT Build (YoloFace8n", r["waiting_for"][0])
+        self.assertIn(
+            "TensorRT: Finalizing TensorRT Build (YoloFace8n", r["waiting_for"][0]
+        )
         commands._build_finished()
         commands._build_finished()  # unmatched hide: ignored
         b = commands._builds_between(t0 - 1, time.time())
-        self.assertEqual([(x["step"], x["model"]) for x in b], [("Finalizing TensorRT Build", "YoloFace8n")])
+        self.assertEqual(
+            [(x["step"], x["model"]) for x in b],
+            [("Finalizing TensorRT Build", "YoloFace8n")],
+        )
         self.assertTrue(commands._readiness(mw)["ready"])
         commands._BUILDS["done"].clear()
 
@@ -928,7 +1253,9 @@ class LazyTensorRTTests(unittest.TestCase):
         import time
         from pathlib import Path
 
-        mw = SimpleNamespace(models_processor=SimpleNamespace(models_pending_build={"B", "A"}))
+        mw = SimpleNamespace(
+            models_processor=SimpleNamespace(models_pending_build={"B", "A"})
+        )
         self.assertEqual(commands._lazy_pending(mw), ["A", "B"])
         self.assertEqual(commands._lazy_pending(SimpleNamespace()), [])
         old = commands.APP_DIR
@@ -953,24 +1280,35 @@ def time_now():
     return time.time()
 
 
-
 class SegmentRecordingTests(unittest.TestCase):
     """A segment recording records only the segments, and VisoMaster's frame counter goes on from the
     previous recording (only a normal recording resets it)."""
 
     def setUp(self):
         import tempfile
+
         commands._REC.clear()
         commands._OUTPUTS.clear()
         commands._SEG_START.clear()
         self.dir = Path(tempfile.mkdtemp(prefix="vmf_seg_"))
-        self.vp = SimpleNamespace(recording=False, is_processing_segments=False, processing=False,
-                                  frames_written=207, next_frame_to_display=269, max_frame_number=269,
-                                  fps=25.0, media_path="C:/x/clip.mp4", segments_to_process=[])
-        self.mw = SimpleNamespace(video_processor=self.vp, control={"OutputMediaFolder": str(self.dir)})
+        self.vp = SimpleNamespace(
+            recording=False,
+            is_processing_segments=False,
+            processing=False,
+            frames_written=207,
+            next_frame_to_display=269,
+            max_frame_number=269,
+            fps=25.0,
+            media_path="C:/x/clip.mp4",
+            segments_to_process=[],
+        )
+        self.mw = SimpleNamespace(
+            video_processor=self.vp, control={"OutputMediaFolder": str(self.dir)}
+        )
 
     def tearDown(self):
         import shutil
+
         commands._REC.clear()
         commands._OUTPUTS.clear()
         commands._SEG_START.clear()
@@ -986,12 +1324,15 @@ class SegmentRecordingTests(unittest.TestCase):
 
     def test_counts_only_this_recording(self):
         import time
+
         vp = self.vp
         commands._SEG_START["written"] = 207  # left by the previous recording
         vp.is_processing_segments = True
         vp.segments_to_process = [(35, 112), (134, 209), (217, 269)]
         rec = commands._rec_update(self.mw)
-        self.assertEqual((rec["start_frame"], rec["total_frames"], rec["segments"]), (35, 207, 3))
+        self.assertEqual(
+            (rec["start_frame"], rec["total_frames"], rec["segments"]), (35, 207, 3)
+        )
         vp.frames_written = 207 + 100
         prog = commands._rec_update(self.mw)["progress"]
         self.assertEqual(prog["frames_written"], 100)
@@ -1026,7 +1367,9 @@ class InlineConfigTests(unittest.TestCase):
             self.assertIn("either path", str(cm.exception))
 
     def test_inline(self):
-        out = commands.cmd_diff(self._ctx(), config={"control": {}}, no_control=True, no_params=True)
+        out = commands.cmd_diff(
+            self._ctx(), config={"control": {}}, no_control=True, no_params=True
+        )
         self.assertEqual(out, {"inline": True, "format": "preset", "notes": []})
         with self.assertRaises(commands.CommandError) as cm:
             commands.cmd_apply_config(self._ctx(), config=[1, 2])
@@ -1038,38 +1381,68 @@ class HiddenWorkspaceSaveTests(unittest.TestCase):
 
     def setUp(self):
         import tempfile
+
         self.dir = Path(tempfile.mkdtemp(prefix="vmf_ws_"))
         self.last = self.dir / "last_workspace.json"
-        self.window = {"x": 67, "y": 261, "width": 2323, "height": 1015, "isMaximized": False,
-                       "isFullScreen": False, "dock_state": "AAA", "jobs": True}
-        self.last.write_text(json.dumps({"window_state_data": self.window, "control": {"a": 1}}), encoding="utf-8")
+        self.window = {
+            "x": 67,
+            "y": 261,
+            "width": 2323,
+            "height": 1015,
+            "isMaximized": False,
+            "isFullScreen": False,
+            "dock_state": "AAA",
+            "jobs": True,
+        }
+        self.last.write_text(
+            json.dumps({"window_state_data": self.window, "control": {"a": 1}}),
+            encoding="utf-8",
+        )
         self.mw = SimpleNamespace(last_workspace_path=self.last)
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.dir, ignore_errors=True)
 
     @staticmethod
     def offscreen_save(mw, data_filename=False):
-        hidden = {"x": -1110, "y": -18, "width": 2104, "height": 828, "isMaximized": False,
-                  "isFullScreen": False, "dock_state": "BBB", "jobs": False}
-        Path(data_filename).write_text(json.dumps({"window_state_data": hidden, "control": {"a": 2}}),
-                                       encoding="utf-8")
+        hidden = {
+            "x": -1110,
+            "y": -18,
+            "width": 2104,
+            "height": 828,
+            "isMaximized": False,
+            "isFullScreen": False,
+            "dock_state": "BBB",
+            "jobs": False,
+        }
+        Path(data_filename).write_text(
+            json.dumps({"window_state_data": hidden, "control": {"a": 2}}),
+            encoding="utf-8",
+        )
 
     def test_window_place_kept_settings_saved(self):
         commands._wrap_workspace_save(self.offscreen_save)(self.mw, str(self.last))
         data = json.loads(self.last.read_text(encoding="utf-8"))
-        self.assertEqual(data["window_state_data"], {**self.window, "jobs": False})  # panels: the new state
+        self.assertEqual(
+            data["window_state_data"], {**self.window, "jobs": False}
+        )  # panels: the new state
         self.assertEqual(data["control"], {"a": 2})
 
     def test_new_file_takes_the_last_workspace_place(self):
         other = self.dir / "other.json"
         commands._wrap_workspace_save(self.offscreen_save)(self.mw, str(other))
-        self.assertEqual(json.loads(other.read_text(encoding="utf-8"))["window_state_data"]["x"], 67)
+        self.assertEqual(
+            json.loads(other.read_text(encoding="utf-8"))["window_state_data"]["x"], 67
+        )
 
     def test_installed_only_when_hidden(self):
         # No VisoMaster here: the import fails and is logged, but only when the hook is wanted.
-        with mock.patch.dict(sys.modules, {"app.ui.widgets.actions": None}),                 mock.patch.object(commands, "log") as log:
+        with (
+            mock.patch.dict(sys.modules, {"app.ui.widgets.actions": None}),
+            mock.patch.object(commands, "log") as log,
+        ):
             with mock.patch.dict(os.environ, {"QT_QPA_PLATFORM": "windows"}):
                 commands._install_workspace_hook()
             log.assert_not_called()

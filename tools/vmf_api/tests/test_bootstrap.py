@@ -41,17 +41,26 @@ class BootstrapDetectionTests(unittest.TestCase):
         site = cls.tmp / "site"
         site.mkdir()
         shutil.copy(VMF / "vmf_api_bootstrap.py", site / "vmf_api_bootstrap.py")
-        (site / "sitecustomize.py").write_text("import vmf_api_bootstrap\n", encoding="utf-8")
+        (site / "sitecustomize.py").write_text(
+            "import vmf_api_bootstrap\n", encoding="utf-8"
+        )
         cls.home = cls.tmp / "vmf_api"
         cls.home.mkdir()
         (cls.home / "vmf_hooks.py").write_text(FAKE_HOOKS, encoding="utf-8")
         # fake repo
         cls.repo = cls.tmp / "VisoMaster-Fusion"
         (cls.repo / "app" / "ui" / "launcher").mkdir(parents=True)
-        for p in ("app/__init__.py", "app/ui/__init__.py", "app/ui/launcher/__init__.py",
-                  "app/ui/launcher/launcher_window.py", "app/ui/main_ui.py"):
+        for p in (
+            "app/__init__.py",
+            "app/ui/__init__.py",
+            "app/ui/launcher/__init__.py",
+            "app/ui/launcher/launcher_window.py",
+            "app/ui/main_ui.py",
+        ):
             (cls.repo / p).write_text("", encoding="utf-8")
-        (cls.repo / "app" / "ui" / "launcher" / "__main__.py").write_text("print('launcher ran')\n", encoding="utf-8")
+        (cls.repo / "app" / "ui" / "launcher" / "__main__.py").write_text(
+            "print('launcher ran')\n", encoding="utf-8"
+        )
         (cls.repo / "main.py").write_text("print('main ran')\n", encoding="utf-8")
         (cls.repo / "launcher.py").write_text("print('shim ran')\n", encoding="utf-8")
         other = cls.tmp / "other"
@@ -68,13 +77,24 @@ class BootstrapDetectionTests(unittest.TestCase):
         mark = self.tmp / "mark.txt"
         if mark.exists():
             mark.unlink()
-        env = {k: v for k, v in os.environ.items() if k not in ("VMF_API", "PYTHONPATH", "PYTHONHOME")}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("VMF_API", "PYTHONPATH", "PYTHONHOME")
+        }
         env["PYTHONPATH"] = str(self.site)
         env["VMF_API_HOME"] = str(self.home)
         env["VMF_TEST_MARK"] = str(mark)
         if vmf_api is not None:
             env["VMF_API"] = vmf_api
-        r = subprocess.run([PY, *args], cwd=str(cwd or self.tmp), env=env, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(
+            [PY, *args],
+            cwd=str(cwd or self.tmp),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         self.assertEqual(r.returncode, 0, r.stderr)
         return (mark.read_text() if mark.exists() else None), r.stdout
 
@@ -83,8 +103,12 @@ class BootstrapDetectionTests(unittest.TestCase):
         self.assertIsNone(self.run_py(["-c", "pass"], vmf_api="1")[0])
 
     def test_other_scripts_inert(self):
-        self.assertIsNone(self.run_py([str(self.tmp / "download_models.py")], vmf_api="1")[0])
-        self.assertIsNone(self.run_py([str(self.tmp / "other" / "main.py")], vmf_api="1")[0])
+        self.assertIsNone(
+            self.run_py([str(self.tmp / "download_models.py")], vmf_api="1")[0]
+        )
+        self.assertIsNone(
+            self.run_py([str(self.tmp / "other" / "main.py")], vmf_api="1")[0]
+        )
         self.assertIsNone(self.run_py(["-m", "pip", "--version"])[0])
 
     def test_launcher_module(self):
@@ -97,20 +121,31 @@ class BootstrapDetectionTests(unittest.TestCase):
 
     def test_app_needs_flag(self):
         self.assertIsNone(self.run_py([str(self.repo / "main.py")], cwd=self.repo)[0])
-        self.assertIsNone(self.run_py([str(self.repo / "main.py")], vmf_api="0", cwd=self.repo)[0])
-        kind, out = self.run_py([str(self.repo / "main.py")], vmf_api="1", cwd=self.repo)
+        self.assertIsNone(
+            self.run_py([str(self.repo / "main.py")], vmf_api="0", cwd=self.repo)[0]
+        )
+        kind, out = self.run_py(
+            [str(self.repo / "main.py")], vmf_api="1", cwd=self.repo
+        )
         self.assertEqual(kind, "app")
         self.assertIn("main ran", out)
 
     def test_inert_does_not_import(self):
-        _, out = self.run_py(["-c", "import sys; print(sorted(m for m in sys.modules if m.startswith('vmf')))"])
+        _, out = self.run_py(
+            [
+                "-c",
+                "import sys; print(sorted(m for m in sys.modules if m.startswith('vmf')))",
+            ]
+        )
         self.assertEqual(out.strip(), "['vmf_api_bootstrap']")
 
     def test_missing_vmf_dir_is_harmless(self):
         env_home = self.home
         try:
             self.__class__.home = self.tmp / "nope"
-            kind, out = self.run_py([str(self.repo / "main.py")], vmf_api="1", cwd=self.repo)
+            kind, out = self.run_py(
+                [str(self.repo / "main.py")], vmf_api="1", cwd=self.repo
+            )
             self.assertIsNone(kind)
             self.assertIn("main ran", out)
             self.assertIn("[VMF-API]", out)
@@ -130,7 +165,11 @@ class HookPatchTests(unittest.TestCase):
             shutil.copy(VMF / f, cls.home / f)
         cls.repo = cls.tmp / "VisoMaster-Fusion"
         (cls.repo / "app" / "ui" / "launcher").mkdir(parents=True)
-        for p in ("app/__init__.py", "app/ui/__init__.py", "app/ui/launcher/__init__.py"):
+        for p in (
+            "app/__init__.py",
+            "app/ui/__init__.py",
+            "app/ui/launcher/__init__.py",
+        ):
             (cls.repo / p).write_text("", encoding="utf-8")
 
     @classmethod
@@ -139,8 +178,12 @@ class HookPatchTests(unittest.TestCase):
 
     def run_with(self, launcher_src, ticked, saved_enabled=True):
         # saved_enabled: an old config.json with "enabled": true must not tick the box any more.
-        (self.repo / "app" / "ui" / "launcher" / "launcher_window.py").write_text(launcher_src, encoding="utf-8")
-        (self.home / "config.json").write_text(json.dumps({"enabled": saved_enabled, "port": 8799}), encoding="utf-8")
+        (self.repo / "app" / "ui" / "launcher" / "launcher_window.py").write_text(
+            launcher_src, encoding="utf-8"
+        )
+        (self.home / "config.json").write_text(
+            json.dumps({"enabled": saved_enabled, "port": 8799}), encoding="utf-8"
+        )
         code = textwrap.dedent(
             f"""
             import sys
@@ -154,9 +197,13 @@ class HookPatchTests(unittest.TestCase):
             print("RESULT", r)
             """
         )
-        env = {k: v for k, v in os.environ.items() if k not in ("VMF_API", "VMF_API_PORT")}
+        env = {
+            k: v for k, v in os.environ.items() if k not in ("VMF_API", "VMF_API_PORT")
+        }
         env["VMF_API_HOME"] = str(self.home)
-        r = subprocess.run([PY, "-c", code], env=env, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(
+            [PY, "-c", code], env=env, capture_output=True, text=True, timeout=120
+        )
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout + r.stderr  # the hooks log to stderr
 
@@ -181,8 +228,14 @@ class HookPatchTests(unittest.TestCase):
 
     def test_unticked_at_each_start(self):
         # Not ticked in this launcher session: no API, even if an old config.json says "enabled": true.
-        self.assertIn("RESULT (None, None)", self.run_with(self.LAUNCHER, False, saved_enabled=True))
-        self.assertIn("RESULT (None, None)", self.run_with(self.LAUNCHER, False, saved_enabled=False))
+        self.assertIn(
+            "RESULT (None, None)",
+            self.run_with(self.LAUNCHER, False, saved_enabled=True),
+        )
+        self.assertIn(
+            "RESULT (None, None)",
+            self.run_with(self.LAUNCHER, False, saved_enabled=False),
+        )
 
     def test_missing_hook_point(self):
         out = self.run_with("class LauncherWindow:\n    pass\n", True)
@@ -200,7 +253,10 @@ class LayoutTests(unittest.TestCase):
         repo = base / "VisoMaster-Fusion"
         (repo / "app").mkdir(parents=True)
         (repo / "main.py").write_text("")
-        for folder, wanted in ((base / "vmf_api", beside), (repo / "tools" / "vmf_api", inside)):
+        for folder, wanted in (
+            (base / "vmf_api", beside),
+            (repo / "tools" / "vmf_api", inside),
+        ):
             if wanted:
                 folder.mkdir(parents=True)
                 (folder / "vmf_hooks.py").write_text("")
@@ -210,17 +266,24 @@ class LayoutTests(unittest.TestCase):
         import importlib.util
 
         # This folder's file, not the copy the portable Python already imported from site-packages.
-        spec = importlib.util.spec_from_file_location("vmf_api_bootstrap_under_test", VMF / "vmf_api_bootstrap.py")
+        spec = importlib.util.spec_from_file_location(
+            "vmf_api_bootstrap_under_test", VMF / "vmf_api_bootstrap.py"
+        )
         vmf_api_bootstrap = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(vmf_api_bootstrap)
         exe = str(base / "portable-files" / "python" / "python.exe")
         env = {k: v for k, v in os.environ.items() if k != "VMF_API_HOME"}
-        with mock.patch.object(sys, "executable", exe), mock.patch.dict(os.environ, env, clear=True):
+        with (
+            mock.patch.object(sys, "executable", exe),
+            mock.patch.dict(os.environ, env, clear=True),
+        ):
             return vmf_api_bootstrap._vmf_dir(str(base / "VisoMaster-Fusion"))
 
     def test_inside_repository(self):
         base = self._tree(beside=False, inside=True)
-        self.assertEqual(Path(self._vmf_dir(base)), base / "VisoMaster-Fusion" / "tools" / "vmf_api")
+        self.assertEqual(
+            Path(self._vmf_dir(base)), base / "VisoMaster-Fusion" / "tools" / "vmf_api"
+        )
 
     def test_beside_wins(self):
         base = self._tree(beside=True, inside=True)

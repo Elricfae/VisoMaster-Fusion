@@ -11,7 +11,6 @@ from app.ui import main_ui  # noqa: F401 -- initialize callbacks through applica
 from app.ui.widgets.settings_layout_data import SETTINGS_LAYOUT_DATA
 
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -174,6 +173,13 @@ def test_confirm_before_stopping_recording_toggle_exists_in_video_recording_sett
     ]
     assert entry["label"] == "Confirm Before Stopping Recording"
     assert entry["default"] is True
+
+
+def test_trt_context_memory_sharing_toggle_exists_in_general_settings():
+    entry = SETTINGS_LAYOUT_DATA["General"]["TrtContextMemorySharingToggle"]
+    assert entry["label"] == "TensorRT Context Memory Sharing"
+    assert entry["default"] is True
+    assert callable(entry.get("exec_function"))
 
 
 # ---------------------------------------------------------------------------

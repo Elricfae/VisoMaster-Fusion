@@ -49,7 +49,11 @@ class _PostImportHook:
                 spec = None
             if spec is not None:
                 break
-        if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+        if (
+            spec is None
+            or spec.loader is None
+            or not hasattr(spec.loader, "exec_module")
+        ):
             log(f"cannot hook {fullname} (module not found)")
             return None
         loader = spec.loader
@@ -130,7 +134,9 @@ def _add_checkbox(window):
     cfg = read_config()
     box = QtWidgets.QCheckBox(CHECKBOX_LABEL)
     box.setObjectName("vmfApiCheckBox")
-    box.setChecked(_LAUNCH["api"])  # a page rebuilt in the same launcher session keeps the tick
+    box.setChecked(
+        _LAUNCH["api"]
+    )  # a page rebuilt in the same launcher session keeps the tick
     box.setToolTip(
         f"Starts the local API (127.0.0.1:{cfg['port']}) when VisoMaster is launched.\n"
         "Unticked each time the launcher starts. Used by vmf-cli and the MCP server.\n"
@@ -154,7 +160,9 @@ def _patch_launcher(module):
     cls = getattr(module, "LauncherWindow", None)
     on_launch = getattr(cls, "on_launch", None) if cls is not None else None
     if cls is None or not callable(on_launch):
-        log("launcher hook unavailable (LauncherWindow.on_launch not found): no API checkbox")
+        log(
+            "launcher hook unavailable (LauncherWindow.on_launch not found): no API checkbox"
+        )
         return
 
     @functools.wraps(on_launch)
@@ -213,7 +221,9 @@ def _patch_launcher(module):
 def _patch_app(module):
     cls = getattr(module, "MainWindow", None)
     if cls is None:
-        log("app hook unavailable (MainWindow not found): VisoMaster starts without the API")
+        log(
+            "app hook unavailable (MainWindow not found): VisoMaster starts without the API"
+        )
         return
     init = cls.__init__
 

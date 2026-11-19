@@ -15,6 +15,7 @@ import kornia.geometry.transform as kgm
 from torchvision.transforms import v2
 import torchvision
 
+import cv2
 import numpy as np
 
 from app.processors.utils import faceutil
@@ -408,25 +409,13 @@ class FrameWorker(threading.Thread):
                     task = None
 
             # --- Break Circular References & Clear Caches ---
-            # We explicitly wipe the heavy PyTorch VRAM caches when the thread dies to ensure
-            # immediate memory release back to the OS.
-            if hasattr(self, "pipeline_processor"):
-                if hasattr(self.pipeline_processor, "_drift_cache"):
-                    self.pipeline_processor._drift_cache.clear()
-                if hasattr(self.pipeline_processor, "_gabor_kernels_cache"):
-                    self.pipeline_processor._gabor_kernels_cache.clear()
-                if hasattr(self.pipeline_processor, "_gabor_kernels_expanded_cache"):
-                    self.pipeline_processor._gabor_kernels_expanded_cache.clear()
-                if hasattr(self.pipeline_processor, "_color_stats_ema"):
-                    self.pipeline_processor._color_stats_ema.clear()
-                self.pipeline_processor._kernel_lap = None
-                self.pipeline_processor._kernel_sobel_x = None
-                self.pipeline_processor._kernel_sobel_y = None
+            self._cleanup_worker_caches()
 
         else:
             # --- Single-Frame Mode ---
             if self.stop_event.is_set():
                 print(f"[WARN] {self.name} cancelled before start.")
+                self._cleanup_worker_caches()
                 return
             try:
                 # Single-Frame worker MUST use the *current* global state
@@ -452,6 +441,28 @@ class FrameWorker(threading.Thread):
             except Exception as e:
                 print(f"[ERROR] Error in {self.name}: {e}")
                 traceback.print_exc()
+            finally:
+                self._cleanup_worker_caches()
+
+    def _cleanup_worker_caches(self) -> None:
+        """Clears per-worker PyTorch GPU tensor caches and breaks circular references."""
+        if hasattr(self, "pipeline_processor"):
+            if hasattr(self.pipeline_processor, "_drift_cache"):
+                self.pipeline_processor._drift_cache.clear()
+            if hasattr(self.pipeline_processor, "_gabor_kernels_cache"):
+                self.pipeline_processor._gabor_kernels_cache.clear()
+            if hasattr(self.pipeline_processor, "_gabor_kernels_expanded_cache"):
+                self.pipeline_processor._gabor_kernels_expanded_cache.clear()
+            if hasattr(self.pipeline_processor, "_color_stats_ema"):
+                self.pipeline_processor._color_stats_ema.clear()
+            self.pipeline_processor._kernel_lap = None
+            self.pipeline_processor._kernel_sobel_x = None
+            self.pipeline_processor._kernel_sobel_y = None
+        if hasattr(self, "_resize_cache"):
+            self._resize_cache.clear()
+        self.frame = None
+        self.parameters = {}
+        self.local_control_state_from_feeder = {}
 
     def process_and_emit_task(self) -> None:
         """
@@ -693,11 +704,44 @@ class FrameWorker(threading.Thread):
         img_numpy_rgb_uint8 = self.frame
         assert img_numpy_rgb_uint8 is not None, "frame must be set before processing"
 
-        # Prepare the base tensor
-        img_chw = np.ascontiguousarray(img_numpy_rgb_uint8.transpose(2, 0, 1))
+        compare_mode_active = self.is_view_face_mask or self.is_view_face_compare
+        img_h, img_w = (
+            int(img_numpy_rgb_uint8.shape[0]),
+            int(img_numpy_rgb_uint8.shape[1]),
+        )
+        yawnet_enabled = bool(
+            control.get("LandmarkDetectToggle", True)
+            and control.get("YawNetEnableToggle", False)
+        )
+        can_use_cpu_roi_path = (
+            getattr(self.models_processor, "device_type", "cpu") == "cuda"
+            and img_h >= 512
+            and img_w >= 512
+            and not control.get("VR180ModeEnableToggle", False)
+            and not control.get("FrameEnhancerEnableToggle", False)
+            and not control.get("FaceDetailerEnableToggle", False)
+            and not control.get("ManualRotationEnableToggle", False)
+            and not yawnet_enabled
+            and not compare_mode_active
+            and not control.get("ShowAllDetectedFacesBBoxToggle", False)
+            and not control.get("ShowByteTrackBBoxToggle", False)
+            and not control.get("ShowLandmarksEnableToggle", False)
+            and not control.get("ShowYawNetRingToggle", False)
+        )
 
-        processed_tensor_rgb_uint8 = torch.from_numpy(img_chw).to(
-            self.models_processor.device
+        if can_use_cpu_roi_path:
+            # Keep the full HD/4K frame on CPU; upload/download only tight face ROIs.
+            return self.standard_processor.process_standard_frame_roi_cpu(
+                img_numpy_rgb_uint8, control, stop_event
+            )
+
+        # Full-frame GPU path (VR180, FrameEnhancer, FaceDetailer, Rotation, YawNet, Overlays, <512px)
+        # Preserve pinned host DMA transfer instead of copying via CPU transpose.
+        processed_tensor_rgb_uint8 = (
+            torch.from_numpy(img_numpy_rgb_uint8)
+            .to(self.models_processor.device, non_blocking=True)
+            .permute(2, 0, 1)
+            .contiguous()
         )
 
         # --- ROUTING LOGIC ---
@@ -713,13 +757,11 @@ class FrameWorker(threading.Thread):
             )
 
         # --- Common Post-Processing (Enhancers, etc.) ---
-        compare_mode_active = self.is_view_face_mask or self.is_view_face_compare
-
         if control.get("FrameEnhancerEnableToggle", False) and not compare_mode_active:
             # Check 5: Before final heavy operation
             if stop_event.is_set():
                 assert img_numpy_rgb_uint8 is not None
-                return img_numpy_rgb_uint8[..., ::-1]
+                return cv2.cvtColor(img_numpy_rgb_uint8, cv2.COLOR_RGB2BGR)
 
             processed_tensor_rgb_uint8 = self.function_worker.enhance_core(
                 processed_tensor_rgb_uint8, control=control
@@ -728,10 +770,7 @@ class FrameWorker(threading.Thread):
         final_img_np_rgb_uint8 = (
             processed_tensor_rgb_uint8.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
         )
-        if not final_img_np_rgb_uint8.flags["C_CONTIGUOUS"]:
-            final_img_np_rgb_uint8 = np.ascontiguousarray(final_img_np_rgb_uint8)
-
-        return final_img_np_rgb_uint8[..., ::-1]
+        return cv2.cvtColor(final_img_np_rgb_uint8, cv2.COLOR_RGB2BGR)
 
     def get_face_similarity_tform(
         self, swapper_model: str, kps_5: np.ndarray
@@ -833,15 +872,24 @@ class FrameWorker(threading.Thread):
         Returns:
             Tuple ``(face_512, face_384, face_256, face_128)``, all CHW uint8 tensors.
         """
-        M_tensor = (
-            torch.from_numpy(cast(np.ndarray, tform.params)[0:2])
-            .float()
-            .unsqueeze(0)
-            .to(img.device)
+        M_np = cast(np.ndarray, tform.params)[0:2]
+        roi_info = faceutil.compute_forward_warp_roi(
+            M_np, int(img.shape[-2]), int(img.shape[-1]), 512, 512, pad=4
         )
+        if roi_info is not None:
+            rx1, ry1, rx2, ry2, M_roi = roi_info
+            src_slice = (
+                img[:, ry1:ry2, rx1:rx2]
+                if img.dim() == 3
+                else img[:, :, ry1:ry2, rx1:rx2]
+            )
+            img_b = src_slice.unsqueeze(0) if src_slice.dim() == 3 else src_slice
+            M_tensor = torch.from_numpy(M_roi).float().unsqueeze(0).to(img.device)
+        else:
+            img_b = img.unsqueeze(0) if img.dim() == 3 else img
+            M_tensor = torch.from_numpy(M_np).float().unsqueeze(0).to(img.device)
 
-        # Cast to float32 for Kornia's grid_sample compatibility on CUDA
-        img_b = img.unsqueeze(0) if img.dim() == 3 else img
+        # Cast only the localized face ROI to float32 for Kornia's grid_sample
         img_b_float = img_b.float()
 
         original_face_512 = kgm.warp_affine(

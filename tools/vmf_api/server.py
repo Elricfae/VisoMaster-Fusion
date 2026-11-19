@@ -16,7 +16,6 @@ import hmac
 import json
 import os
 import secrets
-import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -127,7 +126,9 @@ class ApiServer:
     def start(self):
         handler = _make_handler(self)
         self.httpd = _ExclusiveHTTPServer(("127.0.0.1", self.port), handler)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, name="vmf-api-http", daemon=True)
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, name="vmf-api-http", daemon=True
+        )
         self.thread.start()
         write_json_atomic(
             RUNTIME_PATH,
@@ -168,10 +169,16 @@ class ApiServer:
     def handle(self, name: str, args: dict) -> dict:
         cmd = commands.COMMANDS.get(name)
         if cmd is None:
-            return {"ok": False, "error": f"unknown command: {name}", "result": sorted(commands.COMMANDS)}
+            return {
+                "ok": False,
+                "error": f"unknown command: {name}",
+                "result": sorted(commands.COMMANDS),
+            }
         try:
             if cmd.main_thread:
-                result = self.dispatcher.call(lambda: cmd.run(self.ctx, args), cmd.timeout)
+                result = self.dispatcher.call(
+                    lambda: cmd.run(self.ctx, args), cmd.timeout
+                )
             else:  # read-only polling: never touches Qt, so it does not disturb VisoMaster's UI thread
                 result = cmd.run(self.ctx, args)
             return {"ok": True, "result": result}
@@ -190,7 +197,9 @@ def _make_handler(api: ApiServer):
     class Handler(BaseHTTPRequestHandler):
         server_version = "VMF-API/" + API_VERSION
         protocol_version = "HTTP/1.1"
-        timeout = 60  # socket reads: an idle or stalled client cannot hold a thread forever
+        timeout = (
+            60  # socket reads: an idle or stalled client cannot hold a thread forever
+        )
 
         def log_message(self, fmt, *args):  # keep the console quiet
             pass
@@ -220,11 +229,17 @@ def _make_handler(api: ApiServer):
 
         def _foreign(self) -> bool:
             # Browsers (DNS rebinding / CSRF): wrong Host or any Origin -> refuse.
-            return self.headers.get("Host", "") not in allowed_hosts or bool(self.headers.get("Origin"))
+            return self.headers.get("Host", "") not in allowed_hosts or bool(
+                self.headers.get("Origin")
+            )
 
         def _authorized(self) -> bool:
             auth = self.headers.get("Authorization", "")
-            token = auth[7:] if auth.startswith("Bearer ") else self.headers.get("X-VMF-Token", "")
+            token = (
+                auth[7:]
+                if auth.startswith("Bearer ")
+                else self.headers.get("X-VMF-Token", "")
+            )
             return hmac.compare_digest(token.encode(), api.token.encode())
 
         def do_GET(self):
@@ -232,8 +247,11 @@ def _make_handler(api: ApiServer):
 
         def do_POST(self):
             if self._foreign():
-                self._refuse(403, "refused: requests from a web page (Origin header) or "
-                                  "through another host name are not accepted")
+                self._refuse(
+                    403,
+                    "refused: requests from a web page (Origin header) or "
+                    "through another host name are not accepted",
+                )
                 return
             if not self._authorized():
                 self._refuse(401, "missing or invalid token")
@@ -247,8 +265,12 @@ def _make_handler(api: ApiServer):
             except ValueError:
                 length = -1
             if length < 0 or length > MAX_BODY:
-                self.close_connection = True  # body left unread: the connection cannot be reused
-                self._send(413, {"ok": False, "error": "invalid or too large request body"})
+                self.close_connection = (
+                    True  # body left unread: the connection cannot be reused
+                )
+                self._send(
+                    413, {"ok": False, "error": "invalid or too large request body"}
+                )
                 return
             raw = self.rfile.read(length) if length else b""
             try:
@@ -272,7 +294,11 @@ def start(main_window, port: int) -> ApiServer | None:
         log("power throttling left to Windows (VMF_ALLOW_POWER_THROTTLING=1)")
     else:
         qos = winqos.disable_power_throttling()
-        log("power throttling disabled" if qos.get("applied") else f"power throttling unchanged: {qos.get('reason')}")
+        log(
+            "power throttling disabled"
+            if qos.get("applied")
+            else f"power throttling unchanged: {qos.get('reason')}"
+        )
     try:
         commands.install_hooks(main_window)
     except Exception as e:

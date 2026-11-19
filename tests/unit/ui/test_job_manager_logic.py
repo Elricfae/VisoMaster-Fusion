@@ -59,7 +59,7 @@ for _s in _STUBS:
     if _s not in sys.modules:
         sys.modules[_s] = _stub(_s)
 if isinstance(sys.modules.get("PySide6.QtCore"), MagicMock):
-    sys.modules["PySide6.QtCore"].Slot = lambda *a, **kw: (lambda fn: fn)
+    sys.modules["PySide6.QtCore"].Slot = lambda *a, **kw: lambda fn: fn
 
 from app.helpers.miscellaneous import ParametersDict  # noqa: E402
 
@@ -440,7 +440,6 @@ def test_list_jobs_nonexistent_dir(tmp_path):
     assert result == []
 
 
-
 def test_load_job_settings_restores_selected_target_face_safely(monkeypatch):
     import app.ui.widgets.actions.job_manager_actions as jma
 
@@ -453,13 +452,17 @@ def test_load_job_settings_restores_selected_target_face_safely(monkeypatch):
     mw.cur_selected_target_face_button = None
     mw.job_processor = None
 
-    monkeypatch.setattr(jma, "_load_job_target_faces_and_params", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        jma, "_load_job_target_faces_and_params", lambda *_a, **_kw: None
+    )
     monkeypatch.setattr(jma, "_load_job_controls_and_state", lambda *_a, **_kw: None)
     monkeypatch.setattr(jma, "_load_job_markers", lambda *_a, **_kw: None)
     monkeypatch.setattr(jma, "_restore_state_and_refresh", lambda *_a, **_kw: None)
 
     # 1. Explicit saved face_b is restored
-    jma.load_job_settings(mw, {"selected_media_id": "m1", "selected_target_face_id": "face_b"})
+    jma.load_job_settings(
+        mw, {"selected_media_id": "m1", "selected_target_face_id": "face_b"}
+    )
     assert mw.selected_target_face_id == "face_b"
     assert mw.cur_selected_target_face_button is face_b
     face_b.setChecked.assert_called_with(True)

@@ -201,7 +201,6 @@ SETTINGS_LAYOUT_DATA: Any = {
             "help": "Latent strength when OSDFace is the detailer restorer.",
         },
     },
-
     "Appearance": {
         "ThemeSelection": {
             "level": 1,
@@ -235,6 +234,18 @@ SETTINGS_LAYOUT_DATA: Any = {
             "default": platform_support.default_execution_provider(),
             "help": "Select the providers priority to be used with the system.",
             "exec_function": control_actions.change_execution_provider,
+            "exec_function_args": [],
+        },
+        "TrtContextMemorySharingToggle": {
+            "level": 1,
+            "label": "TensorRT Context Memory Sharing",
+            "default": True,
+            "help": (
+                "Share a single TensorRT execution context activation buffer across heavy models to reduce VRAM usage. "
+                "Disable if you have high VRAM or use few models so each TensorRT model allocates its own context "
+                "and runs concurrently across worker threads. Only applies to TensorRT providers; changing this reloads affected models."
+            ),
+            "exec_function": control_actions.handle_trt_context_memory_sharing_toggle,
             "exec_function_args": [],
         },
         "nThreadsSlider": {

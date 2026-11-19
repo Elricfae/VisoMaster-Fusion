@@ -75,8 +75,12 @@ def _load_save_load_actions_module():
 
         widget_components_stub = sys.modules["app.ui.widgets.widget_components"]
         list_stub = sys.modules["app.ui.widgets.actions.list_view_actions"]
-        list_stub.get_all_merged_embeddings = real_list_view_actions.get_all_merged_embeddings
-        list_stub.get_embedding_tabs_state = real_list_view_actions.get_embedding_tabs_state
+        list_stub.get_all_merged_embeddings = (
+            real_list_view_actions.get_all_merged_embeddings
+        )
+        list_stub.get_embedding_tabs_state = (
+            real_list_view_actions.get_embedding_tabs_state
+        )
         setattr(
             widget_components_stub,
             "TargetMediaCardButton",
@@ -698,21 +702,37 @@ def _read_saved_workspace(path: Path) -> dict:
 
 
 def test_save_workspace_includes_inactive_tabs_and_stable_ids(tmp_path, monkeypatch):
-    window = _make_workspace_main_window(tmp_path, is_theatre_mode=False, is_full_screen=False, is_maximized=False)
-    a = SimpleNamespace(embedding_name="A", embedding_store={"ArcFace": np.array([1., 2.])}, kv_map=None)
-    b = SimpleNamespace(embedding_name="B", embedding_store={"ArcFace": np.array([3., 4.])}, kv_map={"key": "value"})
+    window = _make_workspace_main_window(
+        tmp_path, is_theatre_mode=False, is_full_screen=False, is_maximized=False
+    )
+    a = SimpleNamespace(
+        embedding_name="A",
+        embedding_store={"ArcFace": np.array([1.0, 2.0])},
+        kv_map=None,
+    )
+    b = SimpleNamespace(
+        embedding_name="B",
+        embedding_store={"ArcFace": np.array([3.0, 4.0])},
+        kv_map={"key": "value"},
+    )
     window.merged_embeddings = {"a": a}
     window.embedding_tab_states = [
         {"embeddings": {"a": a}, "filename": "", "list_widget": None},
         {"embeddings": {"b": b}, "filename": "missing.json", "list_widget": None},
     ]
-    window.embeddingTabs = SimpleNamespace(currentIndex=lambda: 0, count=lambda: 2, tabText=lambda i: ["A", "B"][i])
-    monkeypatch.setattr(save_load_actions, "_save_hashed_kv_payload", lambda *a, **kw: "preserved-kv.pth")
+    window.embeddingTabs = SimpleNamespace(
+        currentIndex=lambda: 0, count=lambda: 2, tabText=lambda i: ["A", "B"][i]
+    )
+    monkeypatch.setattr(
+        save_load_actions,
+        "_save_hashed_kv_payload",
+        lambda *a, **kw: "preserved-kv.pth",
+    )
     path = tmp_path / "workspace.json"
     save_current_workspace(window, str(path))
     saved = _read_saved_workspace(path)
     assert set(saved["embeddings_data"]) == {"a", "b"}
-    assert saved["embeddings_data"]["b"]["embedding_store"]["ArcFace"] == [3., 4.]
+    assert saved["embeddings_data"]["b"]["embedding_store"]["ArcFace"] == [3.0, 4.0]
     assert saved["embeddings_data"]["b"]["kv_map"] == "preserved-kv.pth"
     assert saved["embedding_tabs_state"]["tabs"][1]["embedding_ids"] == ["b"]
 

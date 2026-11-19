@@ -19,7 +19,9 @@ DEFAULT_PORT = 8765
 TAG = "[VMF-API]"
 
 # VMF_API_HOME: same override as vmf_api_bootstrap (used by the tests).
-VMF_DIR = Path(os.environ.get("VMF_API_HOME") or Path(__file__).resolve().parent).resolve()
+VMF_DIR = Path(
+    os.environ.get("VMF_API_HOME") or Path(__file__).resolve().parent
+).resolve()
 
 
 def _layout(vmf_dir: Path) -> tuple[Path, Path]:
@@ -27,7 +29,11 @@ def _layout(vmf_dir: Path) -> tuple[Path, Path]:
     inside the repository   <APP_DIR>\\tools\\vmf_api      (APP_DIR = the VisoMaster-Fusion checkout)
     next to it (portable)   <BASE_DIR>\\vmf_api, with <BASE_DIR>\\VisoMaster-Fusion and portable-files."""
     repo = vmf_dir.parent.parent
-    if vmf_dir.parent.name.lower() == "tools" and (repo / "main.py").is_file() and (repo / "app").is_dir():
+    if (
+        vmf_dir.parent.name.lower() == "tools"
+        and (repo / "main.py").is_file()
+        and (repo / "app").is_dir()
+    ):
         return repo.parent, repo
     return vmf_dir.parent, vmf_dir.parent / "VisoMaster-Fusion"
 
@@ -44,7 +50,9 @@ PERSONAL_KEYS_PATH = VMF_DIR / "personal_keys.json"
 
 def log(msg: str) -> None:
     try:
-        print(f"{TAG} {msg}", file=sys.stderr, flush=True)  # stdout is the CLI's JSON / the MCP stdio stream
+        print(
+            f"{TAG} {msg}", file=sys.stderr, flush=True
+        )  # stdout is the CLI's JSON / the MCP stdio stream
     except Exception:
         pass
 
@@ -52,7 +60,9 @@ def log(msg: str) -> None:
 def write_json_atomic(path: Path, data, indent: int = 4) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    fd, tmp = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent, ensure_ascii=False)
@@ -66,7 +76,9 @@ def write_json_atomic(path: Path, data, indent: int = 4) -> None:
 
 
 def read_config() -> dict:
-    cfg = {"port": DEFAULT_PORT}  # an old "enabled" key is ignored: the checkbox is not saved
+    cfg = {
+        "port": DEFAULT_PORT
+    }  # an old "enabled" key is ignored: the checkbox is not saved
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             data = json.load(f)

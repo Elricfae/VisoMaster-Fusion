@@ -576,8 +576,11 @@ class FilterWorker(qtc.QThread):
 
         if is_current():
             filter_actions.update_filtered_list(
-                self.main_window, self.filter_list_widget, visible_indices,
-                snapshot_size, is_current=is_current,
+                self.main_window,
+                self.filter_list_widget,
+                visible_indices,
+                snapshot_size,
+                is_current=is_current,
             )
 
     def retire(self):
@@ -622,7 +625,9 @@ class FilterWorker(qtc.QThread):
                 continue
             visible_indices.append(index)
 
-        self.filtered_results.emit(visible_indices, len(self.items_snapshot), self._running_generation)
+        self.filtered_results.emit(
+            visible_indices, len(self.items_snapshot), self._running_generation
+        )
 
     def filter_input_faces(self):
         # Operates only on pre-captured plain Python data — no Qt widget access.
@@ -633,7 +638,9 @@ class FilterWorker(qtc.QThread):
             if not search_text or search_text in media_path.lower():
                 visible_indices.append(index)
 
-        self.filtered_results.emit(visible_indices, len(self.items_snapshot), self._running_generation)
+        self.filtered_results.emit(
+            visible_indices, len(self.items_snapshot), self._running_generation
+        )
 
     def filter_merged_embeddings(self):
         # Operates only on pre-captured plain Python data — no Qt widget access.
@@ -644,7 +651,9 @@ class FilterWorker(qtc.QThread):
             if not search_text or search_text in embedding_name.lower():
                 visible_indices.append(index)
 
-        self.filtered_results.emit(visible_indices, len(self.items_snapshot), self._running_generation)
+        self.filtered_results.emit(
+            visible_indices, len(self.items_snapshot), self._running_generation
+        )
 
     def stop_thread(self):
         self._generation += 1

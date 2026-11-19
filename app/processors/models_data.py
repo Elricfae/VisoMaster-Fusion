@@ -323,20 +323,15 @@ restorer_model_mapping: dict[str, str] = {
 # a unit biternion whose ANGLE is the product, so a small fp16 drift in (cos, sin) is a
 # silently wrong pose rather than a visible artefact. It costs ~0.3 ms in fp32.
 fp16_safe_models_list = [
-    # --- LivePortrait ---
+    # --- LivePortrait & PerformRecast (Appearance & 2D SPADE Only) ---
     "LivePortraitAppearanceFeatureExtractor",
-    "LivePortraitStitchingEye",
-    "LivePortraitStitchingLip",
-    "LivePortraitStitching",
     "LivePortraitWarpingSpade",
-    # --- Detectors ---
-    "RetinaFace",
-    "SCRFD2.5g",
-    "YoloFace8n",
-    "YunetN",
-    # --- Masking ---
+    "PerformRecastAppearanceFeatureExtractor",
+    "PerformRecastSpadeGenerator",
+    # --- Masking & Matting ---
     "FaceParser",
     "Occluder",
+    "MODNet",
     # --- Upscaling ---
     "RealEsrganx2Plus",
     "RealEsrganx4Plus",
@@ -351,14 +346,6 @@ fp16_safe_models_list = [
     "DeoldifyVideo",
     "DDColorArt",
     "DDcolor",
-    # --- Landmarks ---
-    "FaceLandmark5",
-    "FaceLandmark68",
-    "FaceLandmark98",
-    "FaceLandmark106",
-    "FaceLandmark203",
-    "FaceLandmark478",
-    "FaceBlendShapes",
     # --- Restorers ---
     "GPENBFR256",
     "GPENBFR512",
@@ -367,18 +354,15 @@ fp16_safe_models_list = [
     "RestoreFormerPlusPlus",
     "OSDFacePromptEncoder",
     "OSDFaceVAEEncoder",
-    # --- Recognition ---
-    "Inswapper128ArcFace",
-    "SimSwapArcFace",
-    "GhostArcFace",
-    "CSCSArcFace",
-    "CSCSIDArcFace",
+    "OSDFaceUNet",
+    "OSDFaceVAEDecoder",
     # --- Denoiser ---
     "RefLDMVAEEncoder",
     "RefLDMVAEDecoder",
     "RefLDM_UNET_EXTERNAL_KV",
-    # --- Texture ---
+    # --- Texture & Re-aging ---
     "combo_relu3_3_relu3_1",
+    "FaceReaging",
     # --- Swappers ---
     "AlphaFace",
     "InStyleSwapper256 Version A",
@@ -387,6 +371,69 @@ fp16_safe_models_list = [
     "GhostFacev1",
     "GhostFacev2",
     "GhostFacev3",
+]
+
+# Heavy activation models that share a single TensorRT execution context buffer
+# (trt_context_memory_sharing_enable=True) when TrtContextMemorySharingToggle is enabled.
+# Lightweight detectors, landmarks, ArcFace, Inswapper128, Occluder, XSeg, and
+# stitching MLPs are omitted so they keep private contexts and execute concurrently
+# across worker threads. Disabling TrtContextMemorySharingToggle gives these heavy
+# models private contexts too for full multithreaded concurrency on high-VRAM GPUs.
+trt_context_memory_sharing_models = [
+    # --- LivePortrait & PerformRecast Heavy Modules ---
+    "LivePortraitAppearanceFeatureExtractor",
+    "LivePortraitWarpingSpade",
+    "LivePortraitWarpingSpadeFix",
+    "PerformRecastAppearanceFeatureExtractor",
+    "PerformRecastWarpingModule",
+    "PerformRecastSpadeGenerator",
+    # --- High-Res Masking, Matting & Texture ---
+    "FaceParser",
+    "MODNet",
+    "combo_relu3_3_relu3_1",
+    "FaceReaging",
+    # --- Upscaling ---
+    "RealEsrganx2Plus",
+    "RealEsrganx4Plus",
+    "RealEsrx4v3",
+    "BSRGANx2",
+    "BSRGANx4",
+    "UltraSharpx4",
+    "UltraMixx4",
+    # --- Colors ---
+    "DeoldifyArt",
+    "DeoldifyStable",
+    "DeoldifyVideo",
+    "DDColorArt",
+    "DDcolor",
+    # --- Restorers ---
+    "GFPGANv1.4",
+    "GFPGAN1024",
+    "GPENBFR256",
+    "GPENBFR512",
+    "GPENBFR1024",
+    "GPENBFR2048",
+    "CodeFormer",
+    "VQFRv2",
+    "RestoreFormerPlusPlus",
+    "OSDFacePromptEncoder",
+    "OSDFaceVAEEncoder",
+    "OSDFaceUNet",
+    "OSDFaceVAEDecoder",
+    # --- Denoiser ---
+    "RefLDMVAEEncoder",
+    "RefLDMVAEDecoder",
+    "RefLDM_UNET_EXTERNAL_KV",
+    # --- 256px / 512px Swappers ---
+    "AlphaFace",
+    "InStyleSwapper256 Version A",
+    "InStyleSwapper256 Version B",
+    "InStyleSwapper256 Version C",
+    "SimSwap512",
+    "GhostFacev1",
+    "GhostFacev2",
+    "GhostFacev3",
+    "CSCS",
 ]
 
 # Models whose ONNX graph must be shape-inferred (with a static batch=1) before

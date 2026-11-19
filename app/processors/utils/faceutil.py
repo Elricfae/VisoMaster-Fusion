@@ -645,12 +645,23 @@ def warp_face_by_face_landmark_5(
 
     M, pose_index = estimate_norm(kpss, image_size, mode=mode)
 
-    M_tensor = torch.from_numpy(M).float().unsqueeze(0).to(img.device)
-    img_b = img.unsqueeze(0) if img.dim() == 3 else img
-
     mode_kgm = (
         "nearest" if interpolation == v2.InterpolationMode.NEAREST else "bilinear"
     )
+
+    roi_info = compute_forward_warp_roi(
+        M, int(img.shape[-2]), int(img.shape[-1]), image_size, image_size, pad=4
+    )
+    if roi_info is not None:
+        rx1, ry1, rx2, ry2, M_roi = roi_info
+        src_slice = (
+            img[:, ry1:ry2, rx1:rx2] if img.dim() == 3 else img[:, :, ry1:ry2, rx1:rx2]
+        )
+        img_b = src_slice.unsqueeze(0) if src_slice.dim() == 3 else src_slice
+        M_tensor = torch.from_numpy(M_roi).float().unsqueeze(0).to(img.device)
+    else:
+        img_b = img.unsqueeze(0) if img.dim() == 3 else img
+        M_tensor = torch.from_numpy(M).float().unsqueeze(0).to(img.device)
 
     img_warped = kgm.warp_affine(
         img_b.float(),
@@ -694,6 +705,158 @@ def invertAffineTransform(M):
 
     # F-02: return only the 2x3 affine rows, not the full 3x3 homogeneous matrix
     return IM[0:2, :]
+
+
+def compute_forward_warp_roi(
+    M_2x3: np.ndarray,
+    src_h: int,
+    src_w: int,
+    dst_h: int,
+    dst_w: int,
+    pad: int = 4,
+) -> tuple[int, int, int, int, np.ndarray] | None:
+    """Computes the tight source ROI [x1:x2, y1:y2] and shifted matrix for a forward affine warp.
+
+    Given M_2x3 mapping source (src_w, src_h) -> destination (dst_w, dst_h), returns
+    (x1, y1, x2, y2, M_roi) so warping src[:, y1:y2, x1:x2] with M_roi matches warping
+    the full src with M_2x3 while avoiding full-frame float32 casts on HD/4K frames.
+    Returns None if the transform is singular or the ROI is degenerate (< 2px).
+    """
+    if src_h < 2 or src_w < 2 or dst_h < 1 or dst_w < 1:
+        return None
+    M_arr = np.asarray(M_2x3[:2, :], dtype=np.float64)
+    if not np.all(np.isfinite(M_arr)):
+        return None
+    try:
+        M_inv = invertAffineTransform(M_arr)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(M_inv)):
+        return None
+
+    corners = np.array(
+        [
+            [0.0, 0.0],
+            [float(dst_w - 1), 0.0],
+            [0.0, float(dst_h - 1)],
+            [float(dst_w - 1), float(dst_h - 1)],
+        ],
+        dtype=np.float64,
+    )
+    xs = M_inv[0, 0] * corners[:, 0] + M_inv[0, 1] * corners[:, 1] + M_inv[0, 2]
+    ys = M_inv[1, 0] * corners[:, 0] + M_inv[1, 1] * corners[:, 1] + M_inv[1, 2]
+
+    x1 = max(0, int(math.floor(float(np.min(xs)))) - pad)
+    y1 = max(0, int(math.floor(float(np.min(ys)))) - pad)
+    x2 = min(src_w, int(math.ceil(float(np.max(xs)))) + 1 + pad)
+    y2 = min(src_h, int(math.ceil(float(np.max(ys)))) + 1 + pad)
+
+    if (x2 - x1) < 2 or (y2 - y1) < 2:
+        return None
+
+    M_roi = M_arr.copy()
+    M_roi[0, 2] += M_roi[0, 0] * x1 + M_roi[0, 1] * y1
+    M_roi[1, 2] += M_roi[1, 0] * x1 + M_roi[1, 1] * y1
+    return x1, y1, x2, y2, M_roi.astype(np.float32)
+
+
+def compute_inverse_paste_roi(
+    M_inv_2x3: np.ndarray,
+    crop_h: int,
+    crop_w: int,
+    dst_h: int,
+    dst_w: int,
+    pad: int = 2,
+) -> tuple[int, int, int, int, np.ndarray] | None:
+    """Computes the tight destination ROI [x1:x2, y1:y2] and shifted matrix for inverse paste-back.
+
+    Given M_inv_2x3 mapping crop (crop_w, crop_h) -> full frame (dst_w, dst_h), returns
+    (x1, y1, x2, y2, M_local) so warping crop to dsize=(y2 - y1, x2 - x1) with M_local
+    and compositing onto dst[:, y1:y2, x1:x2] matches a full-frame warp and blend.
+    Returns None if completely off-screen or degenerate (< 2px).
+    """
+    if dst_h < 2 or dst_w < 2 or crop_h < 1 or crop_w < 1:
+        return None
+    M_arr = np.asarray(M_inv_2x3[:2, :], dtype=np.float64)
+    if not np.all(np.isfinite(M_arr)):
+        return None
+
+    corners = np.array(
+        [
+            [0.0, 0.0],
+            [float(crop_w - 1), 0.0],
+            [0.0, float(crop_h - 1)],
+            [float(crop_w - 1), float(crop_h - 1)],
+        ],
+        dtype=np.float64,
+    )
+    xs = M_arr[0, 0] * corners[:, 0] + M_arr[0, 1] * corners[:, 1] + M_arr[0, 2]
+    ys = M_arr[1, 0] * corners[:, 0] + M_arr[1, 1] * corners[:, 1] + M_arr[1, 2]
+
+    x1 = max(0, int(math.floor(float(np.min(xs)))) - pad)
+    y1 = max(0, int(math.floor(float(np.min(ys)))) - pad)
+    x2 = min(dst_w, int(math.ceil(float(np.max(xs)))) + 1 + pad)
+    y2 = min(dst_h, int(math.ceil(float(np.max(ys)))) + 1 + pad)
+
+    if (x2 - x1) < 2 or (y2 - y1) < 2:
+        return None
+
+    M_local = M_arr.copy()
+    M_local[0, 2] -= x1
+    M_local[1, 2] -= y1
+    return x1, y1, x2, y2, M_local.astype(np.float32)
+
+
+def compute_face_box_roi(
+    frame_h: int,
+    frame_w: int,
+    bbox: np.ndarray | None = None,
+    kps: np.ndarray | None = None,
+    scale: float = 3.0,
+    min_side: int = 128,
+    extra_boxes: np.ndarray | None = None,
+) -> tuple[int, int, int, int]:
+    """Computes a generous clamped [x1, y1, x2, y2] ROI around a face bbox/keypoints."""
+    xs_list: list[float] = []
+    ys_list: list[float] = []
+    if bbox is not None and np.asarray(bbox).size >= 4:
+        b = np.asarray(bbox, dtype=np.float64).ravel()
+        if np.all(np.isfinite(b[:4])):
+            xs_list.extend([float(b[0]), float(b[2])])
+            ys_list.extend([float(b[1]), float(b[3])])
+    if kps is not None and np.asarray(kps).size >= 2:
+        k = np.asarray(kps, dtype=np.float64).reshape(-1, 2)
+        finite = np.isfinite(k).all(axis=1)
+        if finite.any():
+            xs_list.extend([float(k[finite, 0].min()), float(k[finite, 0].max())])
+            ys_list.extend([float(k[finite, 1].min()), float(k[finite, 1].max())])
+    if extra_boxes is not None and np.asarray(extra_boxes).size >= 4:
+        eb = np.asarray(extra_boxes, dtype=np.float64).reshape(
+            -1, np.asarray(extra_boxes).shape[-1]
+        )
+        for row in eb:
+            if np.all(np.isfinite(row[:4])):
+                xs_list.extend([float(row[0]), float(row[2])])
+                ys_list.extend([float(row[1]), float(row[3])])
+
+    if not xs_list or not ys_list:
+        return 0, 0, frame_w, frame_h
+
+    min_x, max_x = min(xs_list), max(xs_list)
+    min_y, max_y = min(ys_list), max(ys_list)
+    cx = 0.5 * (min_x + max_x)
+    cy = 0.5 * (min_y + max_y)
+    side = max(max_x - min_x, max_y - min_y, float(min_side)) * float(scale)
+    half = 0.5 * side
+
+    x1 = max(0, int(math.floor(cx - half)))
+    y1 = max(0, int(math.floor(cy - half)))
+    x2 = min(frame_w, int(math.ceil(cx + half)))
+    y2 = min(frame_h, int(math.ceil(cy + half)))
+
+    if (x2 - x1) < 2 or (y2 - y1) < 2:
+        return 0, 0, frame_w, frame_h
+    return x1, y1, x2, y2
 
 
 def warp_face_by_bounding_box_for_landmark_68(img, bbox, input_size):
@@ -1880,10 +2043,22 @@ def warp_face_by_face_landmark_x(
         **transform_kwargs,
     )
 
-    # GPU-accelerated affine warp via Kornia
-    warped_img = transform_img_kgm(
-        img.float(), M_o2c, dsize=dsize, padding_mode=padding_mode
+    # GPU-accelerated affine warp via Kornia — slice only the source ROI before casting to float32
+    roi_info = compute_forward_warp_roi(
+        M_o2c, int(img.shape[1]), int(img.shape[2]), dsize, dsize, pad=4
     )
+    if roi_info is not None:
+        rx1, ry1, rx2, ry2, M_roi = roi_info
+        warped_img = transform_img_kgm(
+            img[:, ry1:ry2, rx1:rx2].float(),
+            M_roi,
+            dsize=dsize,
+            padding_mode=padding_mode,
+        )
+    else:
+        warped_img = transform_img_kgm(
+            img.float(), M_o2c, dsize=dsize, padding_mode=padding_mode
+        )
 
     return warped_img.to(img.dtype), M_o2c, M_c2o
 
@@ -2055,16 +2230,16 @@ def paste_back_adv(
     y = M_c2o[1, 0] * corners[:, 0] + M_c2o[1, 1] * corners[:, 1] + M_c2o[1, 2]
 
     # Constrain the bounding box to the actual dimensions of the original image
-    left = max(math.floor(np.min(x)), 0)
-    top = max(math.floor(np.min(y)), 0)
-    right = min(math.ceil(np.max(x)), img.shape[2])
-    bottom = min(math.ceil(np.max(y)), img.shape[1])
+    left = max(math.floor(np.min(x)) - 1, 0)
+    top = max(math.floor(np.min(y)) - 1, 0)
+    right = min(math.ceil(np.max(x)) + 2, img.shape[2])
+    bottom = min(math.ceil(np.max(y)) + 2, img.shape[1])
 
     bw = right - left
     bh = bottom - top
 
-    # Failsafe: if the bounding box is completely off-screen, return the original image
-    if bw <= 0 or bh <= 0:
+    # Failsafe: if the bounding box is completely off-screen or degenerate (< 2px for align_corners), return original
+    if bw < 2 or bh < 2:
         return img
 
     # 2. Adjust transformation matrix for the localized bounding box
@@ -2101,11 +2276,10 @@ def paste_back_adv(
 
     mask_warped.clamp_(0.0, 1.0)
 
-    # 5. Extract original region, blend in-place, and insert back
+    # 5. Extract ONLY the localized ROI before float32 cast, blend, and write back in-place
     img_is_uint8 = img.dtype == torch.uint8
-    img_float = img.float() / 255.0 if img_is_uint8 else img
-
-    target_roi = img_float[:, top:bottom, left:right]
+    raw_roi = img[:, top:bottom, left:right]
+    target_roi = raw_roi.float() / 255.0 if img_is_uint8 else raw_roi
 
     # In-place blending logic
     blended_roi = (img_warped * mask_warped) + (target_roi * (1.0 - mask_warped))

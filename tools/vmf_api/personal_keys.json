@@ -9,6 +9,7 @@
     ],
     "keys": {
         "ProvidersPrioritySelection": "execution provider (CUDA / TensorRT / CPU) depends on this machine's GPU and install",
+        "TrtContextMemorySharingToggle": "TensorRT context memory sharing depends on this machine's GPU VRAM budget",
         "nThreadsSlider": "thread count is tuned to this machine's hardware",
         "nStreamSlider": "CUDA stream count is tuned to this GPU's VRAM",
         "FrameWorkerDelayDecimalSlider": "frame worker timing is tuned to this machine's speed",

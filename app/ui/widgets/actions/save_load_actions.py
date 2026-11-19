@@ -416,6 +416,7 @@ def open_embeddings_from_file(main_window: "MainWindow"):
             states[idx]["list_widget"] = main_window.inputEmbeddingsList
             list_view_actions.update_active_embedding_tab_title(main_window)
 
+
 def load_embeddings_into_current_tab(
     main_window: "MainWindow", embedding_filename: str
 ) -> bool:
@@ -477,6 +478,7 @@ def load_embeddings_into_current_tab(
     except Exception as e:
         print(f"[ERROR] Failed to load embeddings from {embedding_filename}: {e}")
         return False
+
 
 def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
     if not main_window.merged_embeddings:
@@ -905,7 +907,8 @@ def load_saved_workspace(
                             )
 
             list_view_actions.restore_embedding_tabs_state(
-                main_window, data.get("embedding_tabs_state", {}))
+                main_window, data.get("embedding_tabs_state", {})
+            )
 
             # Add target_faces
             for face_id, target_face_data in data.get("target_faces_data", {}).items():
@@ -1461,7 +1464,9 @@ def save_current_workspace(
         }
 
     # --- Serialize Embeddings ---
-    for embedding_id, embedding_button in list_view_actions.get_all_merged_embeddings(main_window).items():
+    for embedding_id, embedding_button in list_view_actions.get_all_merged_embeddings(
+        main_window
+    ).items():
         kv_map_path = None
         # Check for either the new list format or the legacy map format
         kv_payload_to_save = getattr(embedding_button, "kv_map_list", None) or getattr(
@@ -1560,9 +1565,7 @@ def save_current_workspace(
         "last_target_media_folder_path": main_window.last_target_media_folder_path,
         "last_input_media_folder_path": main_window.last_input_media_folder_path,
         "loaded_embedding_filename": main_window.loaded_embedding_filename,
-        "embedding_tabs_state": list_view_actions.get_embedding_tabs_state(
-            main_window
-        ),
+        "embedding_tabs_state": list_view_actions.get_embedding_tabs_state(main_window),
         "current_widget_parameters": current_params_to_save,  # Use the safely prepared dict
         "tab_state": tab_state,  # Add the tab state to the saved data
         "window_state_data": window_state_data,

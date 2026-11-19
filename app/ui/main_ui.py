@@ -1947,9 +1947,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             offset_layout.setSpacing(0)
             self.gridLayout_2.removeWidget(self.targetFacesList)
             offset_layout.addWidget(self.targetFacesList)
-            self.gridLayout_2.addWidget(
-                self._faces_list_offset_container, 1, 1, 1, 1
-            )
+            self.gridLayout_2.addWidget(self._faces_list_offset_container, 1, 1, 1, 1)
 
         self.targetFacesList.setMinimumHeight(_FACES_PANEL_ROW_HEIGHT)
         self.targetFacesList.setMaximumHeight(_FACES_PANEL_ROW_HEIGHT)
@@ -2084,9 +2082,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         """Restores widgets to their original left panel seamlessly."""
         if getattr(self, "_faces_list_offset_container", None) is not None:
             self._faces_list_offset_container.layout().addWidget(self.targetFacesList)
-            self.gridLayout_2.addWidget(
-                self._faces_list_offset_container, 1, 1, 1, 1
-            )
+            self.gridLayout_2.addWidget(self._faces_list_offset_container, 1, 1, 1, 1)
         else:
             self.gridLayout_2.addWidget(self.targetFacesList, 1, 1, 1, 1)
 

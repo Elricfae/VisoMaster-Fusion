@@ -812,17 +812,27 @@ class VideoProcessor(QObject):
             # Preserve the prefetched frame so the feeder still processes frame 0.
             self.ffmpeg_input_prefetched_frame = frame_bgr.copy()
         else:
-            misc_helpers.seek_frame(self.media_capture, actual_start_frame)
+            is_start_cached = (
+                self._cached_raw_frame_media_path == self.media_path
+                and self._cached_raw_frame_number == actual_start_frame
+                and self._cached_raw_frame_target_height == target_height
+                and self._cached_raw_frame_bgr is not None
+            )
+            if is_start_cached:
+                ret = True
+                frame_bgr = self._cached_raw_frame_bgr
+            else:
+                misc_helpers.seek_frame(self.media_capture, actual_start_frame)
 
-            print(
-                f"[INFO] Sync: Reading frame {actual_start_frame} using locked helper (Target Height: {target_height})..."
-            )
-            ret, frame_bgr = misc_helpers.read_frame(
-                self.media_capture,
-                self.media_rotation,
-                preview_target_height=target_height,
-            )
-            print(f"[INFO] Sync: Initial read complete (Result: {ret}).")
+                print(
+                    f"[INFO] Sync: Reading frame {actual_start_frame} using locked helper (Target Height: {target_height})..."
+                )
+                ret, frame_bgr = misc_helpers.read_frame(
+                    self.media_capture,
+                    self.media_rotation,
+                    preview_target_height=target_height,
+                )
+                print(f"[INFO] Sync: Initial read complete (Result: {ret}).")
 
             if not ret:
                 fallback_frame = int(self.media_capture.get(cv2.CAP_PROP_POS_FRAMES))
@@ -963,9 +973,9 @@ class VideoProcessor(QObject):
                 print("[INFO] Playback mode. Starting playback.")
                 self.media_pipeline._start_synchronized_playback()
 
-    def _cancel_single_frame_preview_state(self):
+    def _cancel_single_frame_preview_state(self, wait: bool = True):
         """Facade: Forwards single-frame cancellation to the WorkerPoolManager."""
-        self.worker_pool_manager.cancel_single_frame_preview_state()
+        self.worker_pool_manager.cancel_single_frame_preview_state(wait=wait)
 
     def _clear_single_frame_preview_caches(self):
         self._last_requested_frame_num = None
@@ -1071,6 +1081,32 @@ class VideoProcessor(QObject):
             if is_cached:
                 frame_bgr = self._cached_raw_frame_bgr
                 ret = True
+            elif (
+                self._seek_cached_frame is not None
+                and self._seek_cached_frame[0] == self.current_frame_number
+                and self._seek_cached_frame[1] is not None
+            ):
+                cached_bgr = self._seek_cached_frame[1]
+                if target_height is not None and cached_bgr.shape[0] != target_height:
+                    orig_h, orig_w = cached_bgr.shape[:2]
+                    if orig_h > 0:
+                        target_w = int(target_height * (orig_w / orig_h))
+                        if target_w % 2 != 0:
+                            target_w += 1
+                        inter = (
+                            cv2.INTER_LANCZOS4
+                            if target_height > orig_h
+                            else cv2.INTER_AREA
+                        )
+                        cached_bgr = cv2.resize(
+                            cached_bgr, (target_w, target_height), interpolation=inter
+                        )
+                frame_bgr = cached_bgr
+                ret = True
+                self._cached_raw_frame_media_path = self.media_path
+                self._cached_raw_frame_number = self.current_frame_number
+                self._cached_raw_frame_target_height = target_height
+                self._cached_raw_frame_bgr = frame_bgr
             else:
                 misc_helpers.seek_frame(self.media_capture, self.current_frame_number)
                 ret, frame_bgr = misc_helpers.read_frame(
@@ -1082,10 +1118,7 @@ class VideoProcessor(QObject):
                     self._cached_raw_frame_media_path = self.media_path
                     self._cached_raw_frame_number = self.current_frame_number
                     self._cached_raw_frame_target_height = target_height
-                    self._cached_raw_frame_bgr = frame_bgr.copy()
-                    misc_helpers.seek_frame(
-                        self.media_capture, self.current_frame_number
-                    )
+                    self._cached_raw_frame_bgr = frame_bgr
 
             if ret and frame_bgr is not None:
                 # BGR to RGB
@@ -1094,31 +1127,7 @@ class VideoProcessor(QObject):
             else:
                 fn = self.current_frame_number
                 max_fn = self.max_frame_number
-                # Fallback: use the raw frame cached during the last slider seek preview.
-                if (
-                    self._seek_cached_frame is not None
-                    and self._seek_cached_frame[0] == fn
-                    and self._seek_cached_frame[1] is not None
-                ):
-                    cached_frame_bgr = self._seek_cached_frame[1]
-                    if (
-                        target_height is not None
-                        and cached_frame_bgr.shape[0] > target_height
-                    ):
-                        h, w = cached_frame_bgr.shape[:2]
-                        scale = target_height / h
-                        cached_frame_bgr = cv2.resize(
-                            cached_frame_bgr,
-                            (int(w * scale), target_height),
-                            interpolation=cv2.INTER_AREA,
-                        )
-                    frame_to_process = cached_frame_bgr[..., ::-1]  # BGR to RGB
-                    read_successful = True
-                    misc_helpers.seek_frame(self.media_capture, fn)
-                    print(
-                        f"[INFO] Using cached slider frame {fn} as fallback for single processing."
-                    )
-                elif fn >= max_fn - TAIL_TOLERANCE:
+                if fn >= max_fn - TAIL_TOLERANCE:
                     print(
                         f"[INFO] EOF reached at frame {fn} (reported max={max_fn}), stopping gracefully."
                     )
@@ -1190,7 +1199,11 @@ class VideoProcessor(QObject):
             )
 
             if frame_changed and not force_suppression:
-                frame_bgr_preview = numpy.ascontiguousarray(frame_to_process[..., ::-1])
+                frame_bgr_preview = (
+                    frame_bgr
+                    if frame_bgr is not None
+                    else numpy.ascontiguousarray(frame_to_process[..., ::-1])
+                )
                 self.display_current_frame(
                     generation=0,
                     frame_number=self.current_frame_number,
@@ -1247,9 +1260,6 @@ class VideoProcessor(QObject):
             return False  # Nothing was active and capture seems OK
 
         print("[INFO] Aborting active processing...")
-
-        # Purge pending model unloads
-        self.main_window.models_processor.execute_all_deferred_unloads()
 
         # 1. Reset flags FIRST to stop all loops immediately.
         # VP-29: Set recording=False early to prevent further frames from being
@@ -1324,6 +1334,18 @@ class VideoProcessor(QObject):
         print("[INFO] Waiting for worker threads to complete...")
         self.join_and_clear_threads()
         print("[INFO] Worker threads joined.")
+
+        # Release page-locked ring buffers now that producer & worker threads have exited.
+        if hasattr(self, "media_pipeline") and hasattr(
+            self.media_pipeline, "release_pinned_ring_buffers"
+        ):
+            self.media_pipeline.release_pinned_ring_buffers()
+
+        # Execute deferred model unloads ONLY AFTER all worker threads have stopped
+        # so live TensorRT/ORT sessions are never destroyed mid-inference.
+        models_processor = getattr(self.main_window, "models_processor", None)
+        if models_processor is not None:
+            models_processor.execute_all_deferred_unloads()
 
         # 5. Stop and cleanup FFmpeg encoder
         if self.encoder.is_running():
@@ -2377,6 +2399,13 @@ class VideoProcessor(QObject):
             print("[INFO] Waiting for final worker threads...")
             self.join_and_clear_threads()
             print("[INFO] Worker threads joined.")
+            if hasattr(self, "media_pipeline") and hasattr(
+                self.media_pipeline, "release_pinned_ring_buffers"
+            ):
+                self.media_pipeline.release_pinned_ring_buffers()
+            models_processor = getattr(self.main_window, "models_processor", None)
+            if models_processor is not None:
+                models_processor.execute_all_deferred_unloads()
 
             # 5. Finalize FFmpeg (close stdin, wait for file to be written)
             if self.encoder.is_running():

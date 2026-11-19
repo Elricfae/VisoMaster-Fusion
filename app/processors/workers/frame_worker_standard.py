@@ -2,12 +2,14 @@ import math
 import threading
 from typing import TYPE_CHECKING, Any, cast
 
+import cv2
 import numpy as np
 import torch
 from torchvision.transforms import v2
 import kornia.geometry.transform as kgm
 
 from app.processors.models_data import landmark_point_counts
+from app.processors.utils import faceutil
 from app.helpers.miscellaneous import (
     ParametersDict,
     draw_bounding_boxes_on_detected_faces,
@@ -1089,15 +1091,24 @@ class StandardProcessor:
             parameters["SwapModelSelection"], kps_5
         )
 
-        M_tensor = (
-            torch.from_numpy(cast(np.ndarray, tform.params)[0:2])
-            .float()
-            .unsqueeze(0)
-            .to(img.device)
+        M_np = cast(np.ndarray, tform.params)[0:2]
+        roi_info = faceutil.compute_forward_warp_roi(
+            M_np, int(img.shape[-2]), int(img.shape[-1]), 512, 512, pad=4
         )
+        if roi_info is not None:
+            rx1, ry1, rx2, ry2, M_roi = roi_info
+            src_slice = (
+                img[:, ry1:ry2, rx1:rx2]
+                if img.dim() == 3
+                else img[:, :, ry1:ry2, rx1:rx2]
+            )
+            img_b = src_slice.unsqueeze(0) if src_slice.dim() == 3 else src_slice
+            M_tensor = torch.from_numpy(M_roi).float().unsqueeze(0).to(img.device)
+        else:
+            img_b = img.unsqueeze(0) if img.dim() == 3 else img
+            M_tensor = torch.from_numpy(M_np).float().unsqueeze(0).to(img.device)
 
-        # Cast to float32 for Kornia
-        img_b = img.unsqueeze(0) if img.dim() == 3 else img
+        # Cast only the localized ROI to float32 for Kornia
         img_b_float = img_b.float()
 
         face_512_aligned = kgm.warp_affine(
@@ -1110,3 +1121,648 @@ class StandardProcessor:
 
         # Convert back to original dtype (uint8)
         return face_512_aligned.to(img.dtype)
+
+    # ------------------------------------------------------------------
+    # CPU-Resident ROI Fast Path (Avoids full-frame HD/4K GPU transfers)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _upload_cpu_roi(
+        frame_rgb: np.ndarray,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        device: Any,
+    ) -> torch.Tensor:
+        roi_np = np.ascontiguousarray(frame_rgb[y1:y2, x1:x2])
+        return (
+            torch.from_numpy(roi_np)
+            .to(device, non_blocking=True)
+            .permute(2, 0, 1)
+            .contiguous()
+        )
+
+    @staticmethod
+    def _shift_points(
+        pts: np.ndarray | None, dx: float, dy: float
+    ) -> np.ndarray | None:
+        if pts is None or not isinstance(pts, np.ndarray) or pts.size == 0:
+            return pts
+        shifted = pts.astype(np.float32, copy=True)
+        shifted[..., 0] += dx
+        shifted[..., 1] += dy
+        return shifted
+
+    @staticmethod
+    def _shift_bbox(bbox: np.ndarray, dx: float, dy: float) -> np.ndarray:
+        shifted = np.asarray(bbox, dtype=np.float32).copy()
+        shifted[0] += dx
+        shifted[2] += dx
+        shifted[1] += dy
+        shifted[3] += dy
+        return shifted
+
+    def _compute_swap_union_roi(
+        self,
+        frame_h: int,
+        frame_w: int,
+        kps_5: np.ndarray,
+        params: Any,
+        edit_button_is_checked_global: bool,
+        kps_for_makeup: np.ndarray | None,
+    ) -> tuple[int, int, int, int] | None:
+        """Computes the tight [x1, y1, x2, y2] ROI covering swap_core + optional makeup."""
+        swapper_model = params["SwapModelSelection"]
+        tform = self.worker.get_face_similarity_tform(swapper_model, kps_5)
+        M_fwd = cast(np.ndarray, tform.params)[0:2]
+        M_inv_np = cast(np.ndarray, tform.inverse.params)
+
+        if params.get("FaceAdjEnableToggle", False) and swapper_model == "AlphaFace":
+            scale_val = 1.0 + (params.get("FaceScaleAmountSlider", 0) / 100.0)
+            if scale_val != 1.0:
+                scale_matrix = np.array(
+                    [
+                        [scale_val, 0.0, 256.0 * (1.0 - scale_val)],
+                        [0.0, scale_val, 256.0 * (1.0 - scale_val)],
+                        [0.0, 0.0, 1.0],
+                    ],
+                    dtype=np.float32,
+                )
+                M_inv_np = M_inv_np @ scale_matrix
+
+        bounds: list[tuple[int, int, int, int]] = []
+        fwd_roi = faceutil.compute_forward_warp_roi(
+            M_fwd, frame_h, frame_w, 512, 512, pad=6
+        )
+        if fwd_roi is not None:
+            bounds.append(fwd_roi[:4])
+        inv_roi = faceutil.compute_inverse_paste_roi(
+            M_inv_np, 512, 512, frame_h, frame_w, pad=6
+        )
+        if inv_roi is not None:
+            bounds.append(inv_roi[:4])
+
+        makeup_active = edit_button_is_checked_global and any(
+            params[f]
+            for f in (
+                "FaceMakeupEnableToggle",
+                "HairMakeupEnableToggle",
+                "EyeBrowsMakeupEnableToggle",
+                "LipsMakeupEnableToggle",
+            )
+        )
+        if makeup_active and kps_for_makeup is not None and len(kps_for_makeup) >= 5:
+            try:
+                M_o2c, M_c2o = faceutil._estimate_similar_transform_from_pts(
+                    kps_for_makeup,
+                    dsize=512,
+                    scale=params["FaceEditorCropScaleDecimalSlider"],
+                    vy_ratio=params["FaceEditorVYRatioDecimalSlider"],
+                )
+                mk_fwd = faceutil.compute_forward_warp_roi(
+                    M_o2c, frame_h, frame_w, 512, 512, pad=6
+                )
+                if mk_fwd is not None:
+                    bounds.append(mk_fwd[:4])
+                mk_inv = faceutil.compute_inverse_paste_roi(
+                    M_c2o, 512, 512, frame_h, frame_w, pad=6
+                )
+                if mk_inv is not None:
+                    bounds.append(mk_inv[:4])
+            except Exception:
+                # Fallback to full frame if makeup transform estimation fails
+                return 0, 0, frame_w, frame_h
+
+        if not bounds:
+            return None
+
+        x1 = max(0, min(b[0] for b in bounds))
+        y1 = max(0, min(b[1] for b in bounds))
+        x2 = min(frame_w, max(b[2] for b in bounds))
+        y2 = min(frame_h, max(b[3] for b in bounds))
+        if (x2 - x1) < 2 or (y2 - y1) < 2:
+            return None
+        return x1, y1, x2, y2
+
+    @torch.no_grad()
+    def process_standard_frame_roi_cpu(
+        self,
+        frame_rgb: np.ndarray,
+        control: dict,
+        stop_event: threading.Event,
+    ) -> np.ndarray:
+        """
+        ROI-only GPU path for standard flat frames >= 512px without full-frame GPU passes.
+
+        Keeps the full HD/4K frame in CPU RAM and uploads/downloads ONLY tight face ROIs
+        to/from VRAM for detection, recognition, landmarking, swapping, and makeup.
+        Returns a C-contiguous BGR uint8 numpy array ready for display/encoding.
+        """
+        swap_button_is_checked_global = (
+            self.worker.main_window.swapfacesButton.isChecked()
+        )
+        edit_button_is_checked_global = (
+            self.worker.main_window.editFacesButton.isChecked()
+        )
+
+        with self.worker.lock:
+            target_faces_snapshot = dict(self.worker.main_window.target_faces)
+
+        img_h, img_w = int(frame_rgb.shape[0]), int(frame_rgb.shape[1])
+        device = self.worker.models_processor.device
+        is_sequentially_tracked = not self.worker.is_single_frame
+
+        det_faces_data_for_display: list[dict[str, Any]] = []
+
+        if is_sequentially_tracked:
+            bboxes = self.worker.precomputed_bboxes
+            kpss_5 = self.worker.precomputed_kpss_5
+            kpss = self.worker.precomputed_kpss
+            kpss_203 = self.worker.precomputed_kpss_203
+        else:
+            # Single-frame scrubbing / still image: run downscaled detection + ROI landmarks
+            if len(target_faces_snapshot) == 0:
+                return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+            use_landmark = control.get("LandmarkDetectToggle", True)
+            landmark_mode = control.get("LandmarkDetectModelSelection", "203")
+            from_points = control.get("DetectFromPointsToggle", False)
+
+            requires_203 = False
+            from collections.abc import Mapping
+
+            for face_params in self.worker.parameters.values():
+                if isinstance(face_params, Mapping):
+                    if (
+                        (
+                            edit_button_is_checked_global
+                            and face_params.get("FaceEditorEnableToggle", False)
+                        )
+                        or face_params.get("FaceExpressionEnableBothToggle", False)
+                        or face_params.get("AutoMouthExpressionEnableToggle", False)
+                        or (
+                            edit_button_is_checked_global
+                            and (
+                                face_params.get("FaceMakeupEnableToggle", False)
+                                or face_params.get("HairMakeupEnableToggle", False)
+                                or face_params.get("EyeBrowsMakeupEnableToggle", False)
+                                or face_params.get("LipsMakeupEnableToggle", False)
+                            )
+                        )
+                    ):
+                        requires_203 = True
+                        break
+
+            detect_mode = control.get("DetectorModelSelection", "RetinaFace")
+            target_det_side = (
+                640
+                if (
+                    landmark_mode == "hrffa"
+                    or detect_mode not in ("RetinaFace", "SCRFD")
+                )
+                else 512
+            )
+            if max(img_h, img_w) > target_det_side:
+                pre_scale = target_det_side / float(max(img_h, img_w))
+                det_w = max(1, int(round(img_w * pre_scale)))
+                det_h = max(1, int(round(img_h * pre_scale)))
+                scale_x = det_w / float(img_w)
+                scale_y = det_h / float(img_h)
+                det_rgb = cv2.resize(
+                    frame_rgb, (det_w, det_h), interpolation=cv2.INTER_AREA
+                )
+            else:
+                scale_x = 1.0
+                scale_y = 1.0
+                det_rgb = frame_rgb
+
+            det_tensor = (
+                torch.from_numpy(np.ascontiguousarray(det_rgb))
+                .to(device, non_blocking=True)
+                .permute(2, 0, 1)
+                .contiguous()
+            )
+            bboxes, kpss_5, _ = self.worker.function_worker.run_detect(
+                det_tensor,
+                detect_mode,
+                max_num=control.get("MaxFacesToDetectSlider", 1),
+                score=control.get("DetectorScoreSlider", 50) / 100.0,
+                input_size=(512, 512),
+                use_landmark_detection=False,
+                from_points=from_points,
+                rotation_angles=[0]
+                if not control.get("AutoRotationToggle", False)
+                else [0, 90, 180, 270],
+                use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
+                previous_detections=None,
+                bypass_bytetrack=True,
+            )
+
+            if bboxes is not None and len(bboxes) > 0:
+                bboxes = np.asarray(bboxes, dtype=np.float32).copy()
+                kpss_5 = np.asarray(kpss_5, dtype=np.float32).copy()
+                if scale_x != 1.0 or scale_y != 1.0:
+                    bboxes[:, [0, 2]] /= scale_x
+                    bboxes[:, [1, 3]] /= scale_y
+                    kpss_5[:, :, 0] /= scale_x
+                    kpss_5[:, :, 1] /= scale_y
+
+            head_bboxes = None
+            if (
+                use_landmark
+                and landmark_mode == "hrffa"
+                and bboxes is not None
+                and len(bboxes) > 0
+            ):
+                head_bboxes = self.worker.function_worker.run_detect_head_bboxes(
+                    det_tensor
+                )
+                if (
+                    head_bboxes is not None
+                    and len(head_bboxes) > 0
+                    and (scale_x != 1.0 or scale_y != 1.0)
+                ):
+                    head_bboxes = np.asarray(head_bboxes, dtype=np.float32).copy()
+                    head_bboxes[:, [0, 2]] /= scale_x
+                    head_bboxes[:, [1, 3]] /= scale_y
+
+            del det_tensor
+
+            kpss = None
+            kpss_203 = None
+            if (
+                bboxes is not None
+                and len(bboxes) > 0
+                and (requires_203 or use_landmark)
+            ):
+                kpss_203_list = []
+                kpss_list = []
+                for idx in range(len(bboxes)):
+                    cur_bbox = bboxes[idx]
+                    cur_kps5 = kpss_5[idx]
+                    matching_heads = None
+                    if head_bboxes is not None and len(head_bboxes) > 0:
+                        overlaps = (
+                            (head_bboxes[:, 2] >= cur_bbox[0])
+                            & (head_bboxes[:, 0] <= cur_bbox[2])
+                            & (head_bboxes[:, 3] >= cur_bbox[1])
+                            & (head_bboxes[:, 1] <= cur_bbox[3])
+                        )
+                        if overlaps.any():
+                            matching_heads = head_bboxes[overlaps]
+
+                    rx1, ry1, rx2, ry2 = faceutil.compute_face_box_roi(
+                        img_h,
+                        img_w,
+                        bbox=cur_bbox,
+                        kps=cur_kps5,
+                        scale=3.0,
+                        min_side=128,
+                        extra_boxes=matching_heads,
+                    )
+                    roi_gpu = self._upload_cpu_roi(
+                        frame_rgb, rx1, ry1, rx2, ry2, device
+                    )
+                    local_bbox = self._shift_bbox(cur_bbox, -rx1, -ry1)
+                    local_kps5 = self._shift_points(cur_kps5, -rx1, -ry1)
+                    local_heads = None
+                    if matching_heads is not None:
+                        local_heads = matching_heads.copy()
+                        local_heads[:, [0, 2]] -= rx1
+                        local_heads[:, [1, 3]] -= ry1
+
+                    kps_203_local = None
+                    if requires_203:
+                        lm_203_5, lm_203, _ = (
+                            self.worker.function_worker.run_detect_landmark(
+                                roi_gpu,
+                                local_bbox,
+                                local_kps5,
+                                detect_mode="203",
+                                score=0.5,
+                                use_mean_eyes=control.get(
+                                    "LandmarkMeanEyesToggle", False
+                                ),
+                                from_points=True,
+                            )
+                        )
+                        if len(lm_203) > 0:
+                            kps_203_local = self._shift_points(
+                                np.asarray(lm_203, dtype=np.float32), rx1, ry1
+                            )
+                            if landmark_mode == "203" and len(lm_203_5) > 0:
+                                kpss_5[idx] = self._shift_points(
+                                    np.asarray(lm_203_5, dtype=np.float32), rx1, ry1
+                                )
+                        else:
+                            kps_203_local = np.zeros((203, 2), dtype=np.float32)
+                        kpss_203_list.append(kps_203_local)
+
+                    if use_landmark:
+                        if (
+                            landmark_mode == "203"
+                            and kps_203_local is not None
+                            and from_points
+                        ):
+                            kpss_list.append(kps_203_local)
+                        else:
+                            lm_std_5, lm_std, _ = (
+                                self.worker.function_worker.run_detect_landmark(
+                                    roi_gpu,
+                                    local_bbox,
+                                    local_kps5,
+                                    detect_mode=landmark_mode,
+                                    score=control.get("LandmarkDetectScoreSlider", 50)
+                                    / 100.0,
+                                    use_mean_eyes=control.get(
+                                        "LandmarkMeanEyesToggle", False
+                                    ),
+                                    from_points=from_points,
+                                    head_bboxes=local_heads,
+                                )
+                            )
+                            if len(lm_std) > 0:
+                                kpss_list.append(
+                                    self._shift_points(
+                                        np.asarray(lm_std, dtype=np.float32), rx1, ry1
+                                    )
+                                )
+                                if len(lm_std_5) > 0:
+                                    kpss_5[idx] = self._shift_points(
+                                        np.asarray(lm_std_5, dtype=np.float32), rx1, ry1
+                                    )
+                            else:
+                                kpss_list.append(
+                                    np.zeros(
+                                        (
+                                            landmark_point_counts.get(landmark_mode, 5),
+                                            2,
+                                        ),
+                                        dtype=np.float32,
+                                    )
+                                )
+                    del roi_gpu
+
+                if requires_203:
+                    kpss_203 = np.array(kpss_203_list, dtype=object)
+                if use_landmark:
+                    kpss = np.array(kpss_list, dtype=object)
+
+        # --- Recognition Pass (ROI-only GPU uploads) ---
+        if (
+            isinstance(kpss_5, np.ndarray)
+            and kpss_5.shape[0] > 0
+            or isinstance(kpss_5, list)
+            and len(kpss_5) > 0
+        ):
+            safe_bboxes = cast(Any, bboxes)
+            _kpss_list = cast(list, kpss) if kpss is not None else []
+            _kpss_203_list = cast(list, kpss_203) if kpss_203 is not None else []
+
+            for i in range(len(kpss_5)):
+                _bbox_i = safe_bboxes[i]
+                if not is_detected_face_eligible_for_matching(
+                    kpss_5[i], _bbox_i, self.worker._MIN_FACE_PIXELS
+                ):
+                    continue
+
+                rx1, ry1, rx2, ry2 = faceutil.compute_face_box_roi(
+                    img_h,
+                    img_w,
+                    bbox=_bbox_i,
+                    kps=kpss_5[i],
+                    scale=2.5,
+                    min_side=128,
+                )
+                rec_roi_gpu = self._upload_cpu_roi(
+                    frame_rgb, rx1, ry1, rx2, ry2, device
+                )
+                local_kps5_rec = self._shift_points(kpss_5[i], -rx1, -ry1)
+                face_emb, _ = self.worker.function_worker.run_recognize_direct(
+                    rec_roi_gpu,
+                    local_kps5_rec,
+                    "Auto",
+                    control["RecognitionModelSelection"],
+                )
+                del rec_roi_gpu
+
+                kps_all_i = _kpss_list[i] if i < len(_kpss_list) else None
+                kps_203_i = _kpss_203_list[i] if i < len(_kpss_203_list) else None
+
+                det_faces_data_for_display.append(
+                    {
+                        "kps_5": kpss_5[i].copy() if kpss_5[i] is not None else None,
+                        "kps_all": kps_all_i.copy() if kps_all_i is not None else None,
+                        "kps_203": kps_203_i.copy() if kps_203_i is not None else None,
+                        "embedding": face_emb,
+                        "bbox": safe_bboxes[i].copy()
+                        if safe_bboxes[i] is not None
+                        else None,
+                        "original_face": None,
+                        "swap_mask": None,
+                        "matched_target": None,
+                    }
+                )
+
+        if not det_faces_data_for_display:
+            return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+        out_rgb: np.ndarray | None = None
+
+        def _run_face_swap_roi(
+            fface: dict[str, Any],
+            target_face: Any,
+            params: Any,
+        ) -> None:
+            nonlocal out_rgb
+
+            denoiser_on = (
+                control.get("DenoiserUNetEnableBeforeRestorersToggle", False)
+                or control.get("DenoiserAfterFirstRestorerToggle", False)
+                or control.get("DenoiserAfterRestorersToggle", False)
+            )
+            if (
+                denoiser_on
+                and target_face.assigned_kv_map is None
+                and target_face.assigned_input_faces
+            ):
+                with self.worker.models_processor.model_lock:
+                    if target_face.assigned_kv_map is None:
+                        target_face.calculate_assigned_input_embedding()
+
+            source_kps = None
+            if target_face:
+                if target_face.assigned_input_faces:
+                    first_input_id = list(target_face.assigned_input_faces.keys())[0]
+                    store = target_face.assigned_input_faces[first_input_id]
+                    source_kps = store.get("kps_5")
+                elif (
+                    hasattr(target_face, "assigned_merged_embeddings")
+                    and target_face.assigned_merged_embeddings
+                ):
+                    first_embed_id = list(
+                        target_face.assigned_merged_embeddings.keys()
+                    )[0]
+                    store = target_face.assigned_merged_embeddings[first_embed_id]
+                    source_kps = store.get("kps_5")
+
+            fface["kps_5"] = keypoints_adjustments(
+                fface["kps_5"], cast(dict, params), source_kps=source_kps
+            )
+
+            arcface_model = self.worker.function_worker.get_arcface_model(
+                params["SwapModelSelection"]
+            )
+            s_e = None
+            if (
+                swap_button_is_checked_global
+                and params["SwapModelSelection"] != "DeepFaceLive (DFM)"
+            ):
+                _reaging_on = params.get("FaceReagingEnableToggle", False)
+                _aged_emb = getattr(target_face, "aged_input_embedding", {})
+                if _reaging_on and _aged_emb:
+                    s_e = _aged_emb.get(arcface_model)
+                else:
+                    s_e = target_face.assigned_input_embedding.get(arcface_model)
+                if s_e is not None and np.isnan(s_e).any():
+                    s_e = None
+
+            _is_dfm = params["SwapModelSelection"] == "DeepFaceLive (DFM)"
+            _has_input = (s_e is not None) or _is_dfm
+            _force_swap = control.get("ForceSwapToggle", True)
+            if not _has_input and not edit_button_is_checked_global and not _force_swap:
+                return
+
+            _aged_kv = getattr(target_face, "aged_kv_map", None)
+            _reaging_kv = (
+                _aged_kv
+                if params.get("FaceReagingEnableToggle", False) and _aged_kv is not None
+                else target_face.assigned_kv_map
+            )
+            _params_for_swap = self.worker._apply_auto_mouth(
+                cast(dict, params),
+                target_face,
+                face_bbox=fface["bbox"],
+            )
+
+            kps_for_makeup = (
+                fface.get("kps_203")
+                if fface.get("kps_203") is not None
+                else fface.get("kps_5")
+            )
+            union_roi = self._compute_swap_union_roi(
+                img_h,
+                img_w,
+                fface["kps_5"],
+                _params_for_swap,
+                edit_button_is_checked_global,
+                kps_for_makeup,
+            )
+            if union_roi is None:
+                return
+
+            ux1, uy1, ux2, uy2 = union_roi
+            if out_rgb is None:
+                out_rgb = frame_rgb.copy()
+
+            roi_gpu = self._upload_cpu_roi(out_rgb, ux1, uy1, ux2, uy2, device)
+            kps_5_local = self._shift_points(fface["kps_5"], -ux1, -uy1)
+            kps_all_local = self._shift_points(fface.get("kps_all"), -ux1, -uy1)
+            kps_203_local = self._shift_points(fface.get("kps_203"), -ux1, -uy1)
+
+            try:
+                roi_gpu, fface["original_face"], fface["swap_mask"] = (
+                    self.worker.swap_core(
+                        roi_gpu,
+                        cast(np.ndarray, kps_5_local),
+                        kps_all_local,
+                        kps_203=kps_203_local,
+                        s_e=s_e,
+                        t_e=target_face.get_embedding(arcface_model),
+                        parameters=_params_for_swap,
+                        control=control,
+                        dfm_model_name=params["DFMModelSelection"],
+                        kv_map=_reaging_kv,
+                        yawnet_deg=fface.get("yawnet_deg"),
+                    )
+                )
+                if edit_button_is_checked_global and any(
+                    params[f]
+                    for f in (
+                        "FaceMakeupEnableToggle",
+                        "HairMakeupEnableToggle",
+                        "EyeBrowsMakeupEnableToggle",
+                        "LipsMakeupEnableToggle",
+                    )
+                ):
+                    mk_kps_local = (
+                        kps_203_local if kps_203_local is not None else kps_5_local
+                    )
+                    roi_gpu = self.worker.function_worker.swap_edit_face_core_makeup(
+                        roi_gpu, mk_kps_local, params.data, control
+                    )
+
+                out_rgb[uy1:uy2, ux1:ux2] = (
+                    roi_gpu.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+                )
+            except Exception as e:
+                print(f"[ERROR] Standard ROI mode swap_core failed for a face: {e}")
+            finally:
+                del roi_gpu
+
+        # --- Swapping / Editing Loop ---
+        if control["SwapOnlyBestMatchEnableToggle"]:
+            for _, target_face in target_faces_snapshot.items():
+                if stop_event.is_set():
+                    break
+                with self.worker.lock:
+                    _default_params = dict(
+                        self.worker.main_window.default_parameters.data
+                    )
+                face_id_str = str(target_face.face_id)
+                params = ParametersDict(
+                    self.worker.parameters.get(face_id_str, _default_params),
+                    _default_params,
+                )
+                best_fface, best_score = None, -1.0
+                for fface in det_faces_data_for_display:
+                    tgt, tgt_params, score = self.worker._find_best_target_match(
+                        fface["embedding"],
+                        control,
+                        target_faces_snapshot,
+                        is_sequentially_tracked=is_sequentially_tracked,
+                    )
+                    fface["matched_target"] = tgt
+                    if tgt and tgt.face_id == target_face.face_id:
+                        effective_threshold = (
+                            tgt_params["SimilarityThresholdSlider"]
+                            if not is_sequentially_tracked
+                            else 0.0
+                        )
+                        if score >= effective_threshold and score > best_score:
+                            best_score = score
+                            best_fface = fface
+
+                if best_fface is not None and (
+                    swap_button_is_checked_global or edit_button_is_checked_global
+                ):
+                    _run_face_swap_roi(best_fface, target_face, params)
+        else:
+            for fface in det_faces_data_for_display:
+                if stop_event.is_set():
+                    break
+                best_target, params, _ = self.worker._find_best_target_match(
+                    fface["embedding"],
+                    control,
+                    target_faces_snapshot,
+                    is_sequentially_tracked=is_sequentially_tracked,
+                )
+                fface["matched_target"] = best_target
+                if best_target and (
+                    swap_button_is_checked_global or edit_button_is_checked_global
+                ):
+                    _run_face_swap_roi(fface, best_target, params)
+
+        final_rgb = out_rgb if out_rgb is not None else frame_rgb
+        return cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR)

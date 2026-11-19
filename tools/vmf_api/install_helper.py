@@ -16,7 +16,11 @@ VMF_DIR = Path(__file__).resolve().parent
 # Next to the checkout (<BASE_DIR>\vmf_api) or inside it (<BASE_DIR>\VisoMaster-Fusion\tools\vmf_api),
 # same rule as vmf_common._layout (not imported: this script runs with -I).
 _REPO = VMF_DIR.parent.parent
-BASE_DIR = _REPO.parent if VMF_DIR.parent.name.lower() == "tools" and (_REPO / "main.py").is_file() else VMF_DIR.parent
+BASE_DIR = (
+    _REPO.parent
+    if VMF_DIR.parent.name.lower() == "tools" and (_REPO / "main.py").is_file()
+    else VMF_DIR.parent
+)
 PORTABLE = BASE_DIR / "portable-files"
 PY = PORTABLE / "python" / "python.exe"
 UV = PORTABLE / "uv" / "uv.exe"
@@ -24,7 +28,9 @@ VENV = VMF_DIR / ".venv"
 FILES = ("vmf_api_hook.pth", "vmf_api_bootstrap.py")
 
 
-MCP_SPEC = "mcp>=2.3,<3"  # the version tested; a new major version may change the server API
+MCP_SPEC = (
+    "mcp>=2.3,<3"  # the version tested; a new major version may change the server API
+)
 
 
 def say(msg=""):
@@ -32,7 +38,9 @@ def say(msg=""):
 
 
 def probe(code: str) -> str:
-    r = subprocess.run([str(PY), "-I", "-c", code], capture_output=True, text=True, timeout=120)
+    r = subprocess.run(
+        [str(PY), "-I", "-c", code], capture_output=True, text=True, timeout=120
+    )
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or f"code {r.returncode}")
     return r.stdout.strip()
@@ -81,7 +89,9 @@ def install():
         say(f"  copied       : {name}")
     loaded = probe("import sys; print('vmf_api_bootstrap' in sys.modules)")
     if loaded != "True":
-        raise SystemExit("[ERROR] the .pth file is not run at Python start-up (check site-packages).")
+        raise SystemExit(
+            "[ERROR] the .pth file is not run at Python start-up (check site-packages)."
+        )
     say("  .pth active  : yes (inert outside launcher / main.py+VMF_API=1)")
 
     # venv for the MCP server (official `mcp` SDK), separate from VisoMaster's Python
@@ -95,27 +105,43 @@ def install():
     if not venv_py.is_file():
         say("Creating the MCP venv ...")
         if UV.is_file():
-            subprocess.run([str(UV), "venv", "--python", str(PY), str(VENV)], check=True, env=env)
+            subprocess.run(
+                [str(UV), "venv", "--python", str(PY), str(VENV)], check=True, env=env
+            )
         else:
             subprocess.run([str(PY), "-m", "venv", str(VENV)], check=True)
     say("Installing the mcp SDK in the venv ...")
     if UV.is_file():
-        subprocess.run([str(UV), "pip", "install", "--python", str(venv_py), "-q", MCP_SPEC], check=True, env=env)
+        subprocess.run(
+            [str(UV), "pip", "install", "--python", str(venv_py), "-q", MCP_SPEC],
+            check=True,
+            env=env,
+        )
     else:
-        subprocess.run([str(venv_py), "-m", "pip", "install", "-q", MCP_SPEC], check=True)
+        subprocess.run(
+            [str(venv_py), "-m", "pip", "install", "-q", MCP_SPEC], check=True
+        )
     ver = subprocess.run(
         [str(venv_py), "-c", "import importlib.metadata as m; print(m.version('mcp'))"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     say(f"  mcp          : {ver}")
     say()
-    say("OK. In the launcher, tick \"Enable API / MCP\", then launch VisoMaster.")
+    say('OK. In the launcher, tick "Enable API / MCP", then launch VisoMaster.')
     say()
     say("MCP server, for any MCP client (add a local / stdio server):")
     say(f"  command   : {venv_py}")
     say(f"  arguments : {VMF_DIR / 'vmf_cli.py'} mcp")
-    say("JSON (\"mcpServers\" section of most clients):")
-    cfg = {"mcpServers": {"visomaster": {"command": str(venv_py), "args": [str(VMF_DIR / "vmf_cli.py"), "mcp"]}}}
+    say('JSON ("mcpServers" section of most clients):')
+    cfg = {
+        "mcpServers": {
+            "visomaster": {
+                "command": str(venv_py),
+                "args": [str(VMF_DIR / "vmf_cli.py"), "mcp"],
+            }
+        }
+    }
     say(json.dumps(cfg, indent=2))
     say("Other client formats: docs\\MCP.md")
 
@@ -125,7 +151,9 @@ def uninstall():
         say(f"Portable Python not found ({PY}): nothing to remove.")
         return
     try:
-        cands = probe("import site; print('\\n'.join(site.getsitepackages()))").splitlines()
+        cands = probe(
+            "import site; print('\\n'.join(site.getsitepackages()))"
+        ).splitlines()
     except Exception:
         cands = [str(PY.parent / "Lib" / "site-packages")]
     removed = 0
@@ -136,8 +164,10 @@ def uninstall():
                 p.unlink()
                 removed += 1
                 say(f"  removed: {p}")
-    say(f"{removed} file(s) removed. The vmf_api folder (config, backups, venv) is kept. Its backups\\ folder "
-        f"holds workspace copies with your face crops and embeddings: delete the folder if you no longer need it.")
+    say(
+        f"{removed} file(s) removed. The vmf_api folder (config, backups, venv) is kept. Its backups\\ folder "
+        f"holds workspace copies with your face crops and embeddings: delete the folder if you no longer need it."
+    )
 
 
 def check():
@@ -145,7 +175,9 @@ def check():
     for name in FILES:
         p = sp / name
         same = p.is_file() and p.read_bytes() == (VMF_DIR / name).read_bytes()
-        say(f"{name}: {'up to date' if same else ('different' if p.is_file() else 'missing')}")
+        say(
+            f"{name}: {'up to date' if same else ('different' if p.is_file() else 'missing')}"
+        )
 
 
 if __name__ == "__main__":

@@ -144,7 +144,9 @@ def update_video_time_line_edit(
 
     minutes = int(total_seconds // 60)
     seconds = int(total_seconds % 60)
-    video_time_line_edit.setText(f"{minutes:02d}:{seconds:02d}")
+    formatted_time = f"{minutes:02d}:{seconds:02d}"
+    if video_time_line_edit.text() != formatted_time:
+        video_time_line_edit.setText(formatted_time)
 
 
 def set_up_timeline_zoom(main_window: "MainWindow"):
@@ -2341,28 +2343,66 @@ def on_change_video_seek_slider(main_window: "MainWindow", new_position=0):
     raw frame for immediate preview, and defers heavy post-seek work (marker
     application, AutoSwap) until the slider is released.
     """
-    # print("Called on_change_video_seek_slider()")
     video_processor = main_window.video_processor
 
-    was_processing = video_processor.stop_processing()
-    if was_processing:
-        print("[WARN] Processing in progress. Stopping current processing.")
+    is_actively_processing = (
+        video_processor.processing
+        or video_processor.is_processing_segments
+        or video_processor.recording
+    )
+    capture_needs_recovery = (
+        video_processor.file_type == "video"
+        and bool(video_processor.media_path)
+        and (
+            not video_processor.media_capture
+            or not video_processor.media_capture.isOpened()
+        )
+    )
+
+    if is_actively_processing or capture_needs_recovery:
+        was_processing = video_processor.stop_processing()
+        if was_processing:
+            print("[WARN] Processing in progress. Stopping current processing.")
+    else:
+        # Cancel any in-flight single-frame preview asynchronously without blocking the GUI thread,
+        # wiping the frame caches, or reloading button icons on every slider drag tick.
+        video_processor._cancel_single_frame_preview_state(wait=False)
 
     video_processor.current_frame_number = new_position
     video_processor.next_frame_to_display = new_position
     update_video_time_line_edit(main_window, new_position)
     update_drop_frame_button_label(main_window)
     if video_processor.media_capture:
-        misc_helpers.seek_frame(video_processor.media_capture, new_position)
-
-        # Read the raw frame without triggering the full pipeline.
-        ret, frame = misc_helpers.read_frame(
-            video_processor.media_capture, video_processor.media_rotation
+        target_height = video_processor._get_target_input_height()
+        is_cached = (
+            video_processor._cached_raw_frame_media_path == video_processor.media_path
+            and video_processor._cached_raw_frame_number == new_position
+            and video_processor._cached_raw_frame_target_height == target_height
+            and video_processor._cached_raw_frame_bgr is not None
         )
-        if ret:
-            # Cache the raw frame so process_current_frame() can use it as a
-            # fallback when the near-EOF re-read fails (OpenCV reliability issue).
+
+        if is_cached:
+            ret = True
+            frame = video_processor._cached_raw_frame_bgr
+        else:
+            misc_helpers.seek_frame(video_processor.media_capture, new_position)
+
+            # Read the raw frame (applying target_height if GlobalInputResizeToggle is active)
+            # so process_current_frame() can reuse it directly without a second seek/decode.
+            ret, frame = misc_helpers.read_frame(
+                video_processor.media_capture,
+                video_processor.media_rotation,
+                preview_target_height=target_height,
+            )
+
+        if ret and frame is not None:
+            # Cache the raw frame for both process_current_frame() and near-EOF fallback
             video_processor._seek_cached_frame = (new_position, frame)
+            video_processor._cached_raw_frame_media_path = video_processor.media_path
+            video_processor._cached_raw_frame_number = new_position
+            video_processor._cached_raw_frame_target_height = target_height
+            video_processor._cached_raw_frame_bgr = frame
+            video_processor._last_requested_frame_num = new_position
 
             # --- HYBRID NAVIGATION PREVIEW ---
             is_stepping = getattr(main_window, "_is_stepping_media", False)

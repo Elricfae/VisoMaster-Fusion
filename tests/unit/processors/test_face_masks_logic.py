@@ -227,9 +227,7 @@ def test_occluder_not_bypassed_when_yaw_unknown():
     fm = _make_face_masks()
     fm.run_occluder = _occluder_returning(0.02)
 
-    mask = fm.apply_occlusion(
-        torch.zeros((3, 256, 256)), amount=0, parameters=GUARD_ON
-    )
+    mask = fm.apply_occlusion(torch.zeros((3, 256, 256)), amount=0, parameters=GUARD_ON)
 
     assert mask.min().item() == 0.0
 
@@ -378,7 +376,9 @@ def test_seg_guard_defaults_match_module_constants():
         enabled, min_yaw, min_ratio = FaceMasks._seg_guard_settings(params)
         assert enabled is False
         assert min_yaw == _SEG_GUARD_MIN_ABS_YAW == 60.0
-        assert min_ratio == pytest.approx(_SEG_GUARD_MIN_FACE_RATIO) == pytest.approx(0.10)
+        assert (
+            min_ratio == pytest.approx(_SEG_GUARD_MIN_FACE_RATIO) == pytest.approx(0.10)
+        )
 
 
 def test_seg_guard_converts_ui_percentage_to_fraction():
@@ -418,8 +418,7 @@ def test_seg_guard_respects_lowered_min_face_area():
         == 0.0
     )
     assert (
-        _occluder_mask({"SegGuardMinFaceRatioSlider": 30}, fill=0.20).min().item()
-        > 0.5
+        _occluder_mask({"SegGuardMinFaceRatioSlider": 30}, fill=0.20).min().item() > 0.5
     )
 
 

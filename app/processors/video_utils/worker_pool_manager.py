@@ -1,5 +1,6 @@
 import queue
 import gc
+import time
 from typing import TYPE_CHECKING, List, Optional, Tuple, Dict, Any
 
 import numpy
@@ -94,9 +95,8 @@ class WorkerPoolManager(QObject):
         self.worker_threads = []
         streamcount: int = int(self.main_window.control.get("nStreamSlider", 1))
 
-        # --- Stream Pool Initialization ---
+        # --- Stream Pool Initialization (Reuse persistent streams to avoid allocator fragmentation) ---
         if torch.cuda.is_available():
-            self.worker_streams.clear()
             # Streams are shared round-robin across workers. Fewer streams means less
             # VRAM (each stream carries its own allocator pool) but more cross-worker
             # waiting, because a stream sync waits on every worker sharing that stream.
@@ -111,9 +111,15 @@ class WorkerPoolManager(QObject):
             # failsafe in FrameWorker.__init__ would then give every worker its own
             # stream — the exact opposite of what a "0 streams" setting implies.
             num_streams = max(1, min(num_threads, streamcount))
-            self.worker_streams = [torch.cuda.Stream() for _ in range(num_streams)]
+            if len(self.worker_streams) < num_streams:
+                self.worker_streams.extend(
+                    torch.cuda.Stream()
+                    for _ in range(num_streams - len(self.worker_streams))
+                )
+            elif len(self.worker_streams) > num_streams:
+                del self.worker_streams[num_streams:]
             print(
-                f"[INFO] WorkerPoolManager: Allocated {num_streams} shared CUDA stream(s) "
+                f"[INFO] WorkerPoolManager: Using {num_streams} shared CUDA stream(s) "
                 f"across {num_threads} worker(s)."
             )
 
@@ -179,19 +185,24 @@ class WorkerPoolManager(QObject):
             except Exception as e:
                 print(f"[WARN] Error putting poison pill in queue: {e}")
 
-        # 3. Join all threads safely
+        # 3. Join all threads safely using a shared deadline so heavy frames can finish
+        # cleanly without being orphaned, while still bounding shutdown wait time.
+        join_deadline = time.monotonic() + 10.0
+        still_alive: List[FrameWorker] = []
         for thread in active_threads:
             try:
                 if thread.is_alive():
-                    thread.join(timeout=2.0)
+                    remaining = max(0.2, join_deadline - time.monotonic())
+                    thread.join(timeout=remaining)
                     if thread.is_alive():
                         print(f"[WARN] Thread {thread.name} did not join gracefully.")
+                        still_alive.append(thread)
             except Exception as e:
                 print(f"[WARN] Error joining thread {thread.name}: {e}")
 
-        # 4. Clear the worker list and streams
-        self.worker_threads.clear()
-        self.worker_streams.clear()
+        # 4. Keep any unjoined workers tracked so a subsequent join can still wait on them,
+        # and keep worker_streams persistent across runs to avoid PyTorch stream-pool fragmentation.
+        self.worker_threads = still_alive
 
         # 5. Release module-level VR and pipeline tensor caches BEFORE running allocator cleanup
         if clear_module_caches:
@@ -200,7 +211,20 @@ class WorkerPoolManager(QObject):
             self.main_window.function_worker.request_ort_arena_shrink()
 
         # 6. Strict VRAM Garbage Collection
-        # Enforce GC and empty_cache AFTER releasing all cached tensor references.
+        # Synchronize streams only when all workers exited cleanly so completed GPU blocks
+        # are actually returned to CUDA when empty_cache() runs.
+        if (
+            not still_alive
+            and torch.cuda.is_available()
+            and torch.cuda.is_initialized()
+        ):
+            for stream in self.worker_streams:
+                try:
+                    stream.synchronize()
+                except Exception:
+                    pass
+            torch.cuda.synchronize()
+
         gc.collect()
         # PROTECTED: Only empty cache if CUDA is already awake.
         # Calling empty_cache() on an asleep GPU forces a 2GB context initialization.
@@ -305,7 +329,7 @@ class WorkerPoolManager(QObject):
             request["generation"],
         )
 
-    def cancel_single_frame_preview_state(self) -> None:
+    def cancel_single_frame_preview_state(self, wait: bool = True) -> None:
         """Immediately aborts any active or pending UI single-frame scrubs."""
         self.single_frame_request_generation += 1
         self.active_single_frame_request_generation = (
@@ -319,6 +343,11 @@ class WorkerPoolManager(QObject):
         if worker is not None:
             if worker.is_alive():
                 worker.stop_event.set()
+                if not wait:
+                    # Let the worker finish asynchronously; _try_start_pending_single_frame_worker
+                    # or a subsequent blocking cancel will clean it up once is_alive() is False.
+                    self._trigger_smart_single_frame_gc()
+                    return
                 worker.join(timeout=2.0)
                 if worker.is_alive():
                     print("[WARN] Single-frame preview worker did not join gracefully.")

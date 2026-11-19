@@ -2443,23 +2443,26 @@ class PipelineProcessor:
         # --- RESTORATION 1 ---
         # FW-PERF-11: defer clone until we know it is needed (lazy snapshot)
         swap_original = None
-        if parameters["FaceRestorerEnableToggle"]:
+        restorer1_passes: int = int(parameters.get("FaceRestorerPassSlider", 1))
+        if parameters["FaceRestorerEnableToggle"] and restorer1_passes > 0:
             # FW-PERF-11: clone only when the restorer will actually run
             swap_original = swap.clone()
-            swap_restorecalc = self.worker.function_worker.apply_facerestorer(
-                swap,
-                parameters["FaceRestorerDetTypeSelection"],
-                parameters["FaceRestorerTypeSelection"],
-                parameters["FaceRestorerBlendSlider"],
-                parameters["FaceFidelityWeightDecimalSlider"],
-                control["DetectorScoreSlider"],
-                kps_ref,
-                slot_id=1,
-                osdface_timestep=parameters.get("OSDFaceTimestepSlider", 399),
-                osdface_latent_strength=parameters.get(
-                    "OSDFaceLatentStrengthDecimalSlider", 1.0
-                ),
-            )
+            swap_restorecalc = swap.clone()
+            for _ in range(restorer1_passes):
+                swap_restorecalc = self.worker.function_worker.apply_facerestorer(
+                    swap_restorecalc,
+                    parameters["FaceRestorerDetTypeSelection"],
+                    parameters["FaceRestorerTypeSelection"],
+                    parameters["FaceRestorerBlendSlider"],
+                    parameters["FaceFidelityWeightDecimalSlider"],
+                    control["DetectorScoreSlider"],
+                    kps_ref,
+                    slot_id=1,
+                    osdface_timestep=parameters.get("OSDFaceTimestepSlider", 399),
+                    osdface_latent_strength=parameters.get(
+                        "OSDFaceLatentStrengthDecimalSlider", 1.0
+                    ),
+                )
         else:
             swap_restorecalc = swap.clone()
 
@@ -2742,6 +2745,7 @@ class PipelineProcessor:
         # Auto Restore (First Pass)
         if (
             parameters["FaceRestorerEnableToggle"]
+            and restorer1_passes > 0
             and parameters["FaceRestorerAutoEnableToggle"]
         ):
             assert swap_original is not None, (
@@ -2787,7 +2791,7 @@ class PipelineProcessor:
                 swap = swap_original
                 if debug:
                     debug_info["Restore1"] = f": {alpha_auto * 100:.2f}"
-        elif parameters["FaceRestorerEnableToggle"]:
+        elif parameters["FaceRestorerEnableToggle"] and restorer1_passes > 0:
             assert swap_original is not None, (
                 "swap_original must be set when FaceRestorerEnableToggle is active"
             )
@@ -2878,25 +2882,29 @@ class PipelineProcessor:
 
         # --- RESTORATION 2 ---
         # FW-QUAL-01/02: duplicated ~60-line block extracted to _apply_restorer_with_auto
+        restorer2_passes: int = int(parameters.get("FaceRestorerPass2Slider", 1))
         if (
             parameters["FaceRestorerEnable2Toggle"]
             and not parameters["FaceRestorerEnable2EndToggle"]
+            and restorer2_passes > 0
         ):
             swap_original2 = swap.clone()
-            swap2 = self.worker.function_worker.apply_facerestorer(
-                swap,
-                parameters["FaceRestorerDetType2Selection"],
-                parameters["FaceRestorerType2Selection"],
-                parameters["FaceRestorerBlend2Slider"],
-                parameters["FaceFidelityWeight2DecimalSlider"],
-                control["DetectorScoreSlider"],
-                kps_ref,
-                slot_id=2,
-                osdface_timestep=parameters.get("OSDFaceTimestep2Slider", 399),
-                osdface_latent_strength=parameters.get(
-                    "OSDFaceLatentStrength2DecimalSlider", 1.0
-                ),
-            )
+            swap2 = swap.clone()
+            for _ in range(restorer2_passes):
+                swap2 = self.worker.function_worker.apply_facerestorer(
+                    swap2,
+                    parameters["FaceRestorerDetType2Selection"],
+                    parameters["FaceRestorerType2Selection"],
+                    parameters["FaceRestorerBlend2Slider"],
+                    parameters["FaceFidelityWeight2DecimalSlider"],
+                    control["DetectorScoreSlider"],
+                    kps_ref,
+                    slot_id=2,
+                    osdface_timestep=parameters.get("OSDFaceTimestep2Slider", 399),
+                    osdface_latent_strength=parameters.get(
+                        "OSDFaceLatentStrength2DecimalSlider", 1.0
+                    ),
+                )
             swap = self._apply_restorer_with_auto(
                 swap,
                 swap2,
@@ -3409,22 +3417,25 @@ class PipelineProcessor:
         if (
             parameters["FaceRestorerEnable2Toggle"]
             and parameters["FaceRestorerEnable2EndToggle"]
+            and restorer2_passes > 0
         ):
             swap_original2 = swap.clone()
-            swap2 = self.worker.function_worker.apply_facerestorer(
-                swap,
-                parameters["FaceRestorerDetType2Selection"],
-                parameters["FaceRestorerType2Selection"],
-                parameters["FaceRestorerBlend2Slider"],
-                parameters["FaceFidelityWeight2DecimalSlider"],
-                control["DetectorScoreSlider"],
-                kps_ref,
-                slot_id=2,
-                osdface_timestep=parameters.get("OSDFaceTimestep2Slider", 399),
-                osdface_latent_strength=parameters.get(
-                    "OSDFaceLatentStrength2DecimalSlider", 1.0
-                ),
-            )
+            swap2 = swap.clone()
+            for _ in range(restorer2_passes):
+                swap2 = self.worker.function_worker.apply_facerestorer(
+                    swap2,
+                    parameters["FaceRestorerDetType2Selection"],
+                    parameters["FaceRestorerType2Selection"],
+                    parameters["FaceRestorerBlend2Slider"],
+                    parameters["FaceFidelityWeight2DecimalSlider"],
+                    control["DetectorScoreSlider"],
+                    kps_ref,
+                    slot_id=2,
+                    osdface_timestep=parameters.get("OSDFaceTimestep2Slider", 399),
+                    osdface_latent_strength=parameters.get(
+                        "OSDFaceLatentStrength2DecimalSlider", 1.0
+                    ),
+                )
             swap = self._apply_restorer_with_auto(
                 swap,
                 swap2,
@@ -3738,10 +3749,10 @@ class PipelineProcessor:
                     255.0,
                 ).type(torch.uint8)
 
-        # --- OPTIMIZED UNTRANSFORM (PASTE BACK) USING KORNIA ---
-        # Eliminates CPU bound calculations, manual slicing, and memory-heavy paddings.
-        # Warps directly to the full frame resolution in one highly optimized GPU pass.
-
+        # --- OPTIMIZED LOCALIZED ROI UNTRANSFORM (PASTE BACK) USING KORNIA ---
+        # Warps and blends strictly within the tight face bounding box in the target frame,
+        # avoiding full-frame float32 allocations (~450 MB per face on 4K) while preserving
+        # exact pixel equivalence.
         M_inv_np = cast(np.ndarray, tform_original.inverse.params)
 
         if alphaface_scale_val != 1.0:
@@ -3757,39 +3768,54 @@ class PipelineProcessor:
             )
             M_inv_np = M_inv_np @ scale_matrix
 
+        paste_roi = faceutil.compute_inverse_paste_roi(
+            M_inv_np,
+            int(swap.shape[1]),
+            int(swap.shape[2]),
+            int(img.shape[1]),
+            int(img.shape[2]),
+            pad=2,
+        )
+        if paste_roi is None:
+            return img, original_face_512_clone, swap_mask_clone
+
+        rx1, ry1, rx2, ry2, M_inv_local = paste_roi
+        roi_dsize = (ry2 - ry1, rx2 - rx1)
+
         M_inv = (
-            torch.from_numpy(M_inv_np[0:2])
+            torch.from_numpy(M_inv_local)
             .float()
             .unsqueeze(0)
             .to(self.worker.models_processor.device)
         )
-        dsize = (img.shape[1], img.shape[2])
 
-        # Warp the 512x512 face and mask directly into the full frame space
-        swap_full = kgm.warp_affine(
+        # Warp the 512x512 face and mask strictly into the localized ROI
+        swap_roi = kgm.warp_affine(
             swap.unsqueeze(0).float(),
             M_inv,
-            dsize=dsize,
+            dsize=roi_dsize,
             mode="bilinear",
             padding_mode="zeros",
             align_corners=True,
         ).squeeze(0)
-        swap_mask_full = kgm.warp_affine(
+        swap_mask_roi = kgm.warp_affine(
             swap_mask.unsqueeze(0).float(),
             M_inv,
-            dsize=dsize,
+            dsize=roi_dsize,
             mode="bilinear",
             padding_mode="zeros",
             align_corners=True,
         ).squeeze(0)
 
-        img = (
-            (swap_full + (img.float() * (1.0 - swap_mask_full)))
+        img_roi = img[:, ry1:ry2, rx1:rx2]
+        blended_roi = (
+            (swap_roi + (img_roi.float() * (1.0 - swap_mask_roi)))
             .clamp_(0, 255)
             .type(torch.uint8)
         )
+        img[:, ry1:ry2, rx1:rx2] = blended_roi
 
-        # --- DEBUG: Draw mouth-region contours on full-frame preview ---
+        # --- DEBUG: Draw mouth-region contours on localized ROI ---
         # Colors: mouth(11+12+13)=green, teeth-keep=cyan.
         if parameters.get("AutoMouthShowDebugOutlineToggle", False):
             for _mask_512, _color in [
@@ -3801,7 +3827,7 @@ class PipelineProcessor:
                         kgm.warp_affine(
                             _mask_512.unsqueeze(0).unsqueeze(0).float(),
                             M_inv,
-                            dsize=dsize,
+                            dsize=roi_dsize,
                             mode="bilinear",
                             padding_mode="zeros",
                             align_corners=True,
@@ -3814,7 +3840,8 @@ class PipelineProcessor:
                         F.max_pool2d(_bin, kernel_size=3, stride=1, padding=1)
                         - (-F.max_pool2d(-_bin, kernel_size=3, stride=1, padding=1))
                     ).squeeze(0).squeeze(0) > 0.0
-                    img[0][_edge], img[1][_edge], img[2][_edge] = (
+                    roi_view = img[:, ry1:ry2, rx1:rx2]
+                    roi_view[0][_edge], roi_view[1][_edge], roi_view[2][_edge] = (
                         _color[0],
                         _color[1],
                         _color[2],

@@ -19,8 +19,11 @@ class ReferenceTests(unittest.TestCase):
         import gen_docs
 
         current = (VMF / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
-        self.assertEqual(current, gen_docs.render(),
-                         "docs/REFERENCE.md is out of date: run .venv\\Scripts\\python.exe gen_docs.py")
+        self.assertEqual(
+            current,
+            gen_docs.render(),
+            "docs/REFERENCE.md is out of date: run .venv\\Scripts\\python.exe gen_docs.py",
+        )
 
 
 if __name__ == "__main__":

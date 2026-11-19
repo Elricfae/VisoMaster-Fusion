@@ -1242,9 +1242,7 @@ class FaceMasks:
         parameters: dict | None = None,
     ) -> bool:
         """Boolean helper indicating whether the profile safeguard is active."""
-        return (
-            FaceMasks._seg_guard_weight(face_mask, yaw_deg, model, parameters) > 0.0
-        )
+        return FaceMasks._seg_guard_weight(face_mask, yaw_deg, model, parameters) > 0.0
 
     @torch.no_grad()
     def apply_occlusion(

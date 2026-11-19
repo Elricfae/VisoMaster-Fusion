@@ -168,7 +168,8 @@ def test_clear_all_target_media_confirm_clears_state(monkeypatch):
 
     watch_calls = []
     monkeypatch.setattr(
-        list_view_actions, "set_target_folder_auto_watch",
+        list_view_actions,
+        "set_target_folder_auto_watch",
         lambda mw, enabled: watch_calls.append((mw, enabled)),
     )
 
@@ -459,7 +460,6 @@ def test_clear_all_embeddings_blocked_leaves_state_unchanged(monkeypatch):
     assert list(main_window.merged_embeddings) == ["embed_1"]
 
 
-
 class _FullDummyListWidget:
     def __init__(self, buttons=None):
         self._items = list(buttons or [])
@@ -483,7 +483,9 @@ class _FullDummyListWidget:
         self._items.clear()
 
 
-def test_set_target_folder_auto_watch_false_when_inactive_preserves_loaded_media(tmp_path):
+def test_set_target_folder_auto_watch_false_when_inactive_preserves_loaded_media(
+    tmp_path,
+):
     media_file = tmp_path / "clip.mp4"
     media_file.write_bytes(b"00")
     btn = SimpleNamespace(
@@ -519,7 +521,9 @@ def test_set_target_folder_auto_watch_false_when_inactive_preserves_loaded_media
     assert main_window.parameters == {"f1": {"SwapModelSelection": "Inswapper128"}}
 
 
-def test_set_target_folder_auto_watch_false_after_active_clears_media(tmp_path, monkeypatch):
+def test_set_target_folder_auto_watch_false_after_active_clears_media(
+    tmp_path, monkeypatch
+):
     media_file = tmp_path / "clip.mp4"
     media_file.write_bytes(b"00")
     btn = SimpleNamespace(
@@ -530,7 +534,10 @@ def test_set_target_folder_auto_watch_false_after_active_clears_media(tmp_path, 
     )
     list_widget = _FullDummyListWidget([btn])
     main_window = SimpleNamespace(
-        control={"AutoLoadTargetFolderToggle": True, "AutoLoadTargetFolderRecursiveToggle": False},
+        control={
+            "AutoLoadTargetFolderToggle": True,
+            "AutoLoadTargetFolderRecursiveToggle": False,
+        },
         target_videos={"m1": btn},
         target_faces={},
         parameters={"f1": {"SwapModelSelection": "Inswapper128"}},
@@ -590,7 +597,9 @@ def test_prune_missing_and_remove_subfolder_target_media(tmp_path):
         parameters={"f1": {}},
         targetVideosList=list_widget,
         placeholder_update_signal=_DummySignal(),
-        video_processor=SimpleNamespace(stop_processing=MagicMock(), media_capture=capture),
+        video_processor=SimpleNamespace(
+            stop_processing=MagicMock(), media_capture=capture
+        ),
         scene=MagicMock(),
     )
 
@@ -604,7 +613,9 @@ def test_prune_missing_and_remove_subfolder_target_media(tmp_path):
 
     # Now prune when root_file is no longer in on_disk
     main_window.selected_video_button = btn_root
-    list_view_actions._prune_missing_auto_loaded_target_media(main_window, str(tmp_path), set())
+    list_view_actions._prune_missing_auto_loaded_target_media(
+        main_window, str(tmp_path), set()
+    )
     assert list_widget.count() == 0
     assert main_window.target_videos == {}
     assert main_window.selected_video_button is None

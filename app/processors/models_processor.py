@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import traceback
+from collections.abc import Mapping
 from typing import Dict, TYPE_CHECKING, Any, Optional
 from packaging import version
 import numpy as np
@@ -58,6 +59,7 @@ from app.processors.models_data import (
     compound_models_mapping,
     restorer_model_mapping,
     fp16_safe_models_list,
+    trt_context_memory_sharing_models,
     tensorrt_shape_infer_models,
     ARCFACE_DST,
     FFHQ_KPS,
@@ -70,7 +72,7 @@ if TYPE_CHECKING:
 # --- Global Configuration ---
 
 onnxruntime.set_default_logger_severity(4)
-onnxruntime.log_verbosity_level = -1
+onnxruntime.set_default_logger_verbosity(0)
 
 
 # --- Isolated Process Worker ---
@@ -154,7 +156,7 @@ class ModelsProcessor(QtCore.QObject):
 
         # --- TENSORRT WORKSPACE ---
         MIN_WORKSPACE_SIZE = 1073741824  # 1 GB
-        FALLBACK_WORKSPACE_SIZE = 4294967296  # 4 GB
+        FALLBACK_WORKSPACE_SIZE = 2147483648  # 2 GB
 
         workspace_size = FALLBACK_WORKSPACE_SIZE
 
@@ -164,8 +166,8 @@ class ModelsProcessor(QtCore.QObject):
             try:
                 # Get total GPU memory in bytes
                 total_vram = torch.cuda.get_device_properties(self.gpu_id).total_memory
-                # Safely allocate 40% of total VRAM for TensorRT workspace
-                calculated_workspace = int(total_vram * 0.40)
+                # Safely allocate 20% of total VRAM for TensorRT workspace
+                calculated_workspace = int(total_vram * 0.20)
                 # Enforce a minimum of 1 GB to avoid compilation failures on very low-end GPUs
                 workspace_size = max(calculated_workspace, MIN_WORKSPACE_SIZE)
             except Exception as e:
@@ -185,6 +187,15 @@ class ModelsProcessor(QtCore.QObject):
             "trt_max_workspace_size": workspace_size,
             "trt_builder_optimization_level": 5,
         }
+
+        # Default CUDA fallback / execution options
+        self.cuda_ep_options: Dict[str, Any] = {
+            "device_id": self.gpu_id,
+            "arena_extend_strategy": "kSameAsRequested",
+        }
+
+        # Tracks id(session) for TRT sessions sharing the execution context buffer
+        self.trt_shared_context_sessions: set[int] = set()
 
         # Default CoreML options (macOS). MLProgram is the modern model format and
         # is required for fp16 compute; ALL lets CoreML place ops on the Neural
@@ -395,7 +406,10 @@ class ModelsProcessor(QtCore.QObject):
                 assert probe_process.stdout is not None
                 for line in probe_process.stdout:
                     stripped = line.rstrip("\r\n")
-                    print(stripped, flush=True)  # keep console behavior
+                    # Only echo actual errors to the console; still feed all lines
+                    # to StageTracker and the GUI build dialog so progress works.
+                    if "[E:" in stripped or "[F:" in stripped or "ERROR" in stripped:
+                        print(stripped, flush=True)
                     self.build_dialog_log.emit(stripped)
                     new_stage = stage_tracker.update(stripped)
                     if new_stage is not None:
@@ -440,9 +454,7 @@ class ModelsProcessor(QtCore.QObject):
                 self._clean_tensorrt_cache(onnx_path, trt_options)
                 raise RuntimeError("TensorRT engine build cancelled by user.")
             return (
-                probe_process.returncode
-                if probe_process.returncode is not None
-                else 1
+                probe_process.returncode if probe_process.returncode is not None else 1
             )
         finally:
             if probe_process is not None and probe_process.poll() is None:
@@ -794,6 +806,17 @@ class ModelsProcessor(QtCore.QObject):
             else:
                 model_trt_options["trt_fp16_enable"] = False
 
+            # Hybrid TRT context memory sharing: when enabled, heavy models share one
+            # activation buffer while lightweight models keep private contexts.
+            # When disabled, all TRT models use private contexts for full multithreaded concurrency.
+            if (
+                self.is_trt_context_memory_sharing_enabled()
+                and canonical_name in trt_context_memory_sharing_models
+            ):
+                model_trt_options["trt_context_memory_sharing_enable"] = True
+            else:
+                model_trt_options["trt_context_memory_sharing_enable"] = False
+
             # Reconstruct the providers with model-specific options
             model_providers = []
             for p in self.providers:
@@ -955,8 +978,7 @@ class ModelsProcessor(QtCore.QObject):
                 # meanwhile, so Windows never marks the window "Not Responding".
                 app = QtCore.QCoreApplication.instance()
                 on_gui_thread = (
-                    app is not None
-                    and QtCore.QThread.currentThread() == app.thread()
+                    app is not None and QtCore.QThread.currentThread() == app.thread()
                 )
                 if build_was_triggered and on_gui_thread:
                     load_outcome: Dict[str, Any] = {}
@@ -1009,6 +1031,10 @@ class ModelsProcessor(QtCore.QObject):
                         self.models_pending_build.add(canonical_name)
 
                 self.models[canonical_name] = model_instance
+                if is_tensorrt_load and model_trt_options.get(
+                    "trt_context_memory_sharing_enable", False
+                ):
+                    self.trt_shared_context_sessions.add(id(model_instance))
                 print(
                     f"[INFO] Loading model: {canonical_name} with provider: {self.provider_name}"
                 )
@@ -1264,8 +1290,16 @@ class ModelsProcessor(QtCore.QObject):
 
                 if model_instance is not None:
                     print(f"[INFO] Unloading ONNX model: {canonical_name}")
+                    session_id = id(model_instance)
+                    # Ensure in-flight GPU work finishes before destroying the session
+                    if torch.cuda.is_available() and torch.cuda.is_initialized():
+                        torch.cuda.synchronize()
                     # MP-06: set dict entry to None first, then del the instance
                     self.models[canonical_name] = None
+                    self.trt_shared_context_sessions.discard(session_id)
+                    fw = getattr(self.main_window, "function_worker", None)
+                    if fw is not None and hasattr(fw, "release_session_tracking"):
+                        fw.release_session_tracking(session_id)
                     # Explicitly delete the object to trigger its __del__ method
                     del model_instance
                     unloaded = True
@@ -1274,8 +1308,60 @@ class ModelsProcessor(QtCore.QObject):
 
             if unloaded:
                 gc.collect()
-                if torch.cuda.is_available():
+                if torch.cuda.is_available() and torch.cuda.is_initialized():
                     torch.cuda.empty_cache()
+
+    def is_trt_context_memory_sharing_enabled(self) -> bool:
+        """Returns whether hybrid TensorRT context memory sharing is enabled in settings."""
+        control = getattr(self.main_window, "control", None)
+        if isinstance(control, Mapping):
+            return bool(control.get("TrtContextMemorySharingToggle", True))
+        return True
+
+    def has_mismatched_trt_shared_context_models(self, enabled: bool) -> bool:
+        """Returns True if any loaded heavy TRT model does not match `enabled`."""
+        if self.provider_name not in ("TensorRT", "TensorRT-Engine"):
+            return False
+        target_shared = bool(enabled)
+        with self.model_lock:
+            return any(
+                (session := self.models.get(name)) is not None
+                and (id(session) in self.trt_shared_context_sessions) != target_shared
+                for name in trt_context_memory_sharing_models
+            )
+
+    def unload_mismatched_trt_shared_context_models(self, enabled: bool) -> list[str]:
+        """Force-unloads loaded heavy TRT models whose context sharing state differs from `enabled`."""
+        if self.provider_name not in ("TensorRT", "TensorRT-Engine"):
+            return []
+
+        target_shared = bool(enabled)
+        with self.model_lock:
+            mismatched = [
+                name
+                for name in trt_context_memory_sharing_models
+                if (session := self.models.get(name)) is not None
+                and (id(session) in self.trt_shared_context_sessions) != target_shared
+            ]
+
+        if not mismatched:
+            return []
+
+        mode_str = "enabled" if target_shared else "disabled"
+        print(
+            f"[INFO] TensorRT context memory sharing {mode_str}. "
+            f"Unloading {len(mismatched)} heavy TensorRT model(s) to apply setting: {', '.join(mismatched)}"
+        )
+
+        prev_force = self.force_unload_in_progress
+        self.force_unload_in_progress = True
+        try:
+            for name in mismatched:
+                self.unload_model(name, force_immediate=True)
+        finally:
+            self.force_unload_in_progress = prev_force
+
+        return mismatched
 
     def purge_unused_restorers(self) -> None:
         """
@@ -1547,12 +1633,12 @@ class ModelsProcessor(QtCore.QObject):
             case "TensorRT" | "TensorRT-Engine":
                 return [
                     ("TensorrtExecutionProvider", self.trt_ep_options),
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", dict(self.cuda_ep_options)),
                     ("CPUExecutionProvider"),
                 ]
             case "CUDA":
                 return [
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", dict(self.cuda_ep_options)),
                     ("CPUExecutionProvider"),
                 ]
             case "CoreML":
@@ -1574,7 +1660,7 @@ class ModelsProcessor(QtCore.QObject):
                     raise RuntimeError("TensorRT is not installed.")
                 providers = [
                     ("TensorrtExecutionProvider", self.trt_ep_options),
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", dict(self.cuda_ep_options)),
                     ("CPUExecutionProvider"),
                 ]
                 self.device = f"cuda:{self.gpu_id}"
@@ -1618,7 +1704,7 @@ class ModelsProcessor(QtCore.QObject):
                         "available on this machine."
                     )
                 providers = [
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", dict(self.cuda_ep_options)),
                     ("CPUExecutionProvider"),
                 ]
                 self.device = f"cuda:{self.gpu_id}"

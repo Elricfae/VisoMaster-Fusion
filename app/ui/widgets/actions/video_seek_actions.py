@@ -31,10 +31,16 @@ class TimelineSeekSlider(QtWidgets.QSlider):
         self._cached_baseline_ctrl = {}
         self._connected_widgets = set()
 
+        self._provisional_check_timer = QtCore.QTimer(self)
+        self._provisional_check_timer.setSingleShot(True)
+        self._provisional_check_timer.setInterval(150)
+        self._provisional_check_timer.timeout.connect(self.check_provisional_changes)
+
     def setup(self, main_window: "MainWindow"):
         """Injects the main window dependency after UI creation."""
         self.main_window = main_window
         self.valueChanged.connect(self.trigger_check)
+        self.sliderReleased.connect(self.trigger_check)
         self.valueChanged.connect(self._auto_scroll_viewport)
         QtCore.QTimer.singleShot(500, self.bind_provisional_events)
 
@@ -156,6 +162,10 @@ class TimelineSeekSlider(QtWidgets.QSlider):
     def is_state_provisional(self) -> bool:
         if not self.main_window:
             return False
+        vp = getattr(self.main_window, "video_processor", None)
+        if vp is not None and (vp.processing or vp.is_processing_segments):
+            return self._last_provisional_state
+
         current_position = self.value()
 
         if not self.markers_sorted or current_position < self.markers_sorted[0]:
@@ -202,13 +212,24 @@ class TimelineSeekSlider(QtWidgets.QSlider):
         return False
 
     def check_provisional_changes(self):
+        if self.isSliderDown():
+            return
         current_state = self.is_state_provisional()
         if current_state != self._last_provisional_state:
             self._last_provisional_state = current_state
             self.update()
 
     def trigger_check(self, *args, **kwargs):
-        QtCore.QTimer.singleShot(150, self.check_provisional_changes)
+        if self.isSliderDown():
+            return
+        vp = (
+            getattr(self.main_window, "video_processor", None)
+            if self.main_window
+            else None
+        )
+        if vp is not None and (vp.processing or vp.is_processing_segments):
+            return
+        self._provisional_check_timer.start(150)
 
     def bind_provisional_events(self):
         if hasattr(self.main_window, "parameter_widgets"):
@@ -390,11 +411,19 @@ class ThumbnailExtractionWorker(QtCore.QThread):
     # Sends (frame_number, QImage) back to the main thread
     thumbnail_ready = QtCore.Signal(int, QtGui.QImage)
 
-    def __init__(self, media_path, frame_intervals, target_height, parent=None):
+    def __init__(
+        self,
+        media_path,
+        frame_intervals,
+        target_height,
+        rotation_angle: int | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.media_path = media_path
         self.frame_intervals = frame_intervals
         self.target_height = target_height
+        self.rotation_angle = rotation_angle
         self._is_cancelled = False
 
     def cancel(self):
@@ -404,7 +433,11 @@ class ThumbnailExtractionWorker(QtCore.QThread):
         if not self.media_path or not self.frame_intervals:
             return
 
-        rotation_angle = get_video_rotation(self.media_path)
+        rotation_angle = (
+            self.rotation_angle
+            if self.rotation_angle is not None
+            else get_video_rotation(self.media_path)
+        )
         cap = cv2.VideoCapture(self.media_path)
 
         if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
@@ -418,6 +451,8 @@ class ThumbnailExtractionWorker(QtCore.QThread):
                 break
 
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+            if self._is_cancelled:
+                break
             ret, frame = misc_helpers.read_frame(cap, rotation_angle)
 
             if ret and frame is not None and not self._is_cancelled:
@@ -458,7 +493,8 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
         self.main_window = None
-        self.worker = None
+        self.worker: ThumbnailExtractionWorker | None = None
+        self._retiring_workers: set[ThumbnailExtractionWorker] = set()
         self.thumbnail_cache = {}
         self.current_media_path = None
         self.expected_intervals = []
@@ -468,6 +504,30 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
         self.resize_timer.setSingleShot(True)
         self.resize_timer.setInterval(400)
         self.resize_timer.timeout.connect(self.request_thumbnails)
+
+    def _retire_active_worker(self) -> None:
+        """Cancels the current worker asynchronously without blocking the Qt main thread."""
+        worker = self.worker
+        if worker is None:
+            return
+        self.worker = None
+        worker.cancel()
+        try:
+            worker.thumbnail_ready.disconnect(self.on_thumbnail_ready)
+        except (RuntimeError, TypeError):
+            pass
+        # Hold the Python reference until the thread emits `finished`
+        self._retiring_workers.add(worker)
+
+    def _on_worker_finished(self, worker: ThumbnailExtractionWorker) -> None:
+        """Safely drops references and schedules C++ deletion only after the thread exits."""
+        self._retiring_workers.discard(worker)
+        if self.worker is worker:
+            self.worker = None
+        try:
+            worker.deleteLater()
+        except RuntimeError:
+            pass
 
     def setup(self, main_window):
         self.main_window = main_window
@@ -492,12 +552,10 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
 
         # Respect the setting — stop generation and hide when disabled
         if not self.main_window.control.get("ShowSeekBarThumbnailsToggle", True):
+            self._retire_active_worker()
             self.thumbnail_cache.clear()
             self.expected_intervals.clear()
             self.setVisible(False)
-            if self.worker and self.worker.isRunning():
-                self.worker.cancel()
-                self.worker.wait()
             self.update()
             return
 
@@ -505,6 +563,7 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
 
         vp = self.main_window.video_processor
         if vp.file_type != "video" or not vp.media_path or vp.max_frame_number <= 0:
+            self._retire_active_worker()
             self.thumbnail_cache.clear()
             self.current_media_path = None  # Reset tracker
             self.update()
@@ -512,6 +571,7 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
 
         # --- CLEAR CACHE ON VIDEO CHANGE ---
         if self.current_media_path != vp.media_path:
+            self._retire_active_worker()
             self.thumbnail_cache.clear()
             self.current_media_path = vp.media_path
             self.expected_intervals.clear()  # Force a full recalculation
@@ -548,14 +608,15 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
         else:
             visible_intervals = all_intervals
 
-        # 3. Clean up cache
-        # We ONLY remove thumbnails from old zoom levels to save RAM.
-        # We keep the scrolled ones cached so scrubbing back and forth is instantly responsive
-        keys_to_remove = [
-            k for k in self.thumbnail_cache.keys() if k not in all_intervals
-        ]
-        for k in keys_to_remove:
-            del self.thumbnail_cache[k]
+        # 3. Clean up cache only when it grows beyond a generous bound so minor window resizes
+        # or zoom adjustments do not purge already-decoded thumbnails.
+        max_cache_entries = max(200, len(visible_intervals) * 4)
+        if len(self.thumbnail_cache) > max_cache_entries:
+            active_set = set(all_intervals)
+            stale_keys = [k for k in self.thumbnail_cache.keys() if k not in active_set]
+            excess = len(self.thumbnail_cache) - max_cache_entries
+            for k in stale_keys[:excess]:
+                del self.thumbnail_cache[k]
 
         # 4. Only request extraction for VISIBLE thumbnails we don't have yet
         missing_visible = [
@@ -563,16 +624,20 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
         ]
 
         if missing_visible:
-            # Cancel any active worker
-            if self.worker and self.worker.isRunning():
-                self.worker.cancel()
-                self.worker.wait()
+            # Cancel any active worker asynchronously without blocking the GUI thread
+            self._retire_active_worker()
 
-            self.worker = ThumbnailExtractionWorker(
-                vp.media_path, missing_visible, self.height(), self
+            worker = ThumbnailExtractionWorker(
+                vp.media_path,
+                missing_visible,
+                self.height(),
+                rotation_angle=vp.media_rotation,
+                parent=self,
             )
-            self.worker.thumbnail_ready.connect(self.on_thumbnail_ready)
-            self.worker.start()
+            worker.thumbnail_ready.connect(self.on_thumbnail_ready)
+            worker.finished.connect(lambda w=worker: self._on_worker_finished(w))
+            self.worker = worker
+            worker.start()
 
         self.update()  # Force repaint of visible area
 
@@ -653,7 +718,8 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
 
     def paintEvent(self, event: QtGui.QPaintEvent):
         painter = QtGui.QPainter(self)
-        painter.fillRect(self.rect(), QtGui.QColor("#1e1e1e"))
+        paint_rect = event.rect()
+        painter.fillRect(paint_rect, QtGui.QColor("#1e1e1e"))
 
         if not self.expected_intervals:
             return
@@ -668,8 +734,17 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
         font.setBold(True)
         painter.setFont(font)
 
-        # Draw the thumbnails along the track
-        for i, frame_num in enumerate(self.expected_intervals):
+        # Clip iteration strictly to the exposed paint rectangle
+        thumb_w = max(1, self.thumbnail_width)
+        start_idx = max(0, paint_rect.left() // thumb_w)
+        end_idx = min(
+            len(self.expected_intervals),
+            (paint_rect.right() // thumb_w) + 2,
+        )
+
+        # Draw only the visible thumbnails along the track
+        for i in range(start_idx, end_idx):
+            frame_num = self.expected_intervals[i]
             x_pos = i * self.thumbnail_width
 
             if frame_num in self.thumbnail_cache:

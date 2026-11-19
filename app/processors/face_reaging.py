@@ -87,7 +87,16 @@ class FaceReaging:
             input_name = session.get_inputs()[0].name
             output_name = session.get_outputs()[0].name
 
-            out_np = session.run([output_name], {input_name: inp_np})[0]  # (1,3,H,W)
+            if self.function_worker is not None and hasattr(
+                self.function_worker, "run_ort_session"
+            ):
+                out_np = self.function_worker.run_ort_session(
+                    session, [output_name], {input_name: inp_np}
+                )[0]  # (1,3,H,W)
+            else:
+                out_np = session.run([output_name], {input_name: inp_np})[
+                    0
+                ]  # (1,3,H,W)
 
             delta = torch.from_numpy(out_np).squeeze(0)  # (3,H,W)
             aged = torch.clamp(face_float + delta, 0.0, 1.0)

@@ -10,7 +10,6 @@ import os
 import queue
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import unittest
@@ -58,8 +57,21 @@ class FakeApi(BaseHTTPRequestHandler):
 def dummy(schema: dict):
     t = schema.get("type")
     if t is None and "anyOf" in schema:
-        t = next((s.get("type") for s in schema["anyOf"] if s.get("type") not in (None, "null")), "string")
-    return {"string": "x", "integer": 1, "number": 1, "boolean": False, "array": ["x"]}.get(t, "x")
+        t = next(
+            (
+                s.get("type")
+                for s in schema["anyOf"]
+                if s.get("type") not in (None, "null")
+            ),
+            "string",
+        )
+    return {
+        "string": "x",
+        "integer": 1,
+        "number": 1,
+        "boolean": False,
+        "array": ["x"],
+    }.get(t, "x")
 
 
 @unittest.skipUnless(VENV_PY.is_file(), "vmf_api\\.venv missing (run install.bat)")
@@ -73,18 +85,28 @@ class McpToolsTests(unittest.TestCase):
         try:
             (home / "runtime").mkdir()
             (home / "runtime" / "server.json").write_text(
-                json.dumps({"port": httpd.server_address[1], "token": "t", "pid": 0}), encoding="utf-8"
+                json.dumps({"port": httpd.server_address[1], "token": "t", "pid": 0}),
+                encoding="utf-8",
             )
             env = dict(os.environ, VMF_API_HOME=str(home))
             # stderr to a file: an undrained pipe fills up with tracebacks and freezes the server.
             err_log = open(home / "mcp_stderr.log", "w", encoding="utf-8")
             p = subprocess.Popen(
-                [str(VENV_PY), str(VMF / "vmf_cli.py"), "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=err_log, text=True, encoding="utf-8", env=env,
+                [str(VENV_PY), str(VMF / "vmf_cli.py"), "mcp"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=err_log,
+                text=True,
+                encoding="utf-8",
+                env=env,
             )
             lines: queue.Queue = queue.Queue()
-            threading.Thread(target=lambda: [lines.put(x) for x in iter(p.stdout.readline, "")] and None,
-                             daemon=True).start()
+            threading.Thread(
+                target=lambda: (
+                    [lines.put(x) for x in iter(p.stdout.readline, "")] and None
+                ),
+                daemon=True,
+            ).start()
 
             def send(m):
                 p.stdin.write(json.dumps(m) + "\n")
@@ -95,13 +117,25 @@ class McpToolsTests(unittest.TestCase):
                     try:
                         line = lines.get(timeout=30)
                     except queue.Empty:
-                        self.fail(f"no answer from the MCP server for request {i} within 30 s")
+                        self.fail(
+                            f"no answer from the MCP server for request {i} within 30 s"
+                        )
                     d = json.loads(line)
                     if d.get("id") == i:
                         return d
 
-            send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "t", "version": "0"},
+                    },
+                }
+            )
             recv(1)
             send({"jsonrpc": "2.0", "method": "notifications/initialized"})
             send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
@@ -109,12 +143,24 @@ class McpToolsTests(unittest.TestCase):
             self.assertGreaterEqual(len(tools), 30)
             for n, tool in enumerate(tools, start=10):
                 schema = tool.get("inputSchema", {})
-                args = {k: dummy(v) for k, v in schema.get("properties", {}).items() if k in schema.get("required", [])}
+                args = {
+                    k: dummy(v)
+                    for k, v in schema.get("properties", {}).items()
+                    if k in schema.get("required", [])
+                }
                 with self.subTest(tool=tool["name"]):
-                    send({"jsonrpc": "2.0", "id": n, "method": "tools/call",
-                          "params": {"name": tool["name"], "arguments": args}})
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": n,
+                            "method": "tools/call",
+                            "params": {"name": tool["name"], "arguments": args},
+                        }
+                    )
                     res = recv(n)["result"]
-                    text = " ".join(c.get("text", "") for c in res["content"] if c["type"] == "text")
+                    text = " ".join(
+                        c.get("text", "") for c in res["content"] if c["type"] == "text"
+                    )
                     if tool["name"] == "apply_offline":
                         # runs locally (no API): a clear error about the missing file is expected
                         self.assertTrue(res.get("isError"))
@@ -124,20 +170,42 @@ class McpToolsTests(unittest.TestCase):
             # arguments named "name" reach the API untouched (regression: _call(name, **kw) clash)
             sent = {c: a for c, a in FakeApi.calls}
             self.assertEqual(sent["run_action"].get("name"), "x")
-            self.assertEqual(sent["restore_backup"].get("name", "absent"), "absent")  # optional, not sent
+            self.assertEqual(
+                sent["restore_backup"].get("name", "absent"), "absent"
+            )  # optional, not sent
             # a config given inline reaches the API as a JSON object
-            cfg = {"parameters": {"SwapperResSelection": "Auto"}, "control": {"nThreadsSlider": 3}}
-            send({"jsonrpc": "2.0", "id": 901, "method": "tools/call",
-                  "params": {"name": "diff", "arguments": {"config": cfg}}})
+            cfg = {
+                "parameters": {"SwapperResSelection": "Auto"},
+                "control": {"nThreadsSlider": 3},
+            }
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 901,
+                    "method": "tools/call",
+                    "params": {"name": "diff", "arguments": {"config": cfg}},
+                }
+            )
             self.assertFalse(recv(901)["result"].get("isError"))
             self.assertEqual(FakeApi.calls[-1][0], "diff")
             self.assertEqual(FakeApi.calls[-1][1].get("config"), cfg)
             self.assertNotIn("path", FakeApi.calls[-1][1])
             # a refused path keeps its reason (regression: the SDK showed only "Error executing tool")
-            send({"jsonrpc": "2.0", "id": 900, "method": "tools/call",
-                  "params": {"name": "load_target_media", "arguments": {"paths": ["\\\\host\\share\\x.mp4"]}}})
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 900,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "load_target_media",
+                        "arguments": {"paths": ["\\\\host\\share\\x.mp4"]},
+                    },
+                }
+            )
             res = recv(900)["result"]
-            text = " ".join(c.get("text", "") for c in res["content"] if c["type"] == "text")
+            text = " ".join(
+                c.get("text", "") for c in res["content"] if c["type"] == "text"
+            )
             self.assertTrue(res.get("isError"))
             self.assertIn("network or device path", text)
         finally:

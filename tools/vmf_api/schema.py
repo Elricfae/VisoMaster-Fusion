@@ -28,8 +28,18 @@ LAYOUT_SOURCES = (
 )
 
 _SPEC_FIELDS = (
-    "default", "min_value", "max_value", "options", "decimals", "step",
-    "label", "help", "parentToggle", "requiredToggleValue", "parentSelection", "requiredSelectionValue",
+    "default",
+    "min_value",
+    "max_value",
+    "options",
+    "decimals",
+    "step",
+    "label",
+    "help",
+    "parentToggle",
+    "requiredToggleValue",
+    "parentSelection",
+    "requiredSelectionValue",
 )
 # Tab of the VisoMaster UI that shows each layout.
 LAYOUT_TABS = {
@@ -144,7 +154,11 @@ class Schema:
             # Some layouts declare a default outside [min, max] (e.g.
             # FaceExpressionNormalizeLipsThresholdDecimalSlider: 0.03 < 0.10);
             # VisoMaster stores it as-is, so the declared default is always valid.
-            is_default = e is not None and _num(e.default) is not None and abs(_num(e.default) - n) <= 1e-9
+            is_default = (
+                e is not None
+                and _num(e.default) is not None
+                and abs(_num(e.default) - n) <= 1e-9
+            )
             if e is not None and not is_default:
                 if e.min is not None and n < e.min - 1e-9:
                     return False, value, f"{key}: {n} < min {e.min:g}"
@@ -176,7 +190,11 @@ def values_equal(a: Any, b: Any) -> bool:
     if isinstance(a, bool) or isinstance(b, bool):
         return a is b or a == b and type(a) is type(b)
     na, nb = _num(a), _num(b)
-    if na is not None and nb is not None and not (isinstance(a, str) and isinstance(b, str)):
+    if (
+        na is not None
+        and nb is not None
+        and not (isinstance(a, str) and isinstance(b, str))
+    ):
         return abs(na - nb) <= 1e-9
     return a == b
 
@@ -219,16 +237,31 @@ def depends_on(spec: dict) -> dict | None:
     if isinstance(vals, str):
         vals = [vals]
     if isinstance(sels, (list, tuple)) and isinstance(vals, (list, tuple)):
-        all_ += [{"key": k, "value": v} for k, v in zip(sels, vals) if isinstance(k, str)]
+        all_ += [
+            {"key": k, "value": v} for k, v in zip(sels, vals) if isinstance(k, str)
+        ]
     toggles = spec.get("parentToggle")
     if isinstance(toggles, str) and toggles.strip():
         if "|" in toggles:
-            any_ += [{"key": t.strip(), "value": True} for t in toggles.split("|") if t.strip()]
+            any_ += [
+                {"key": t.strip(), "value": True}
+                for t in toggles.split("|")
+                if t.strip()
+            ]
         elif "&" in toggles:
-            all_ += [{"key": t.strip(), "value": True} for t in toggles.split("&") if t.strip()]
+            all_ += [
+                {"key": t.strip(), "value": True}
+                for t in toggles.split("&")
+                if t.strip()
+            ]
         else:
             req = spec.get("requiredToggleValue", True)
-            all_.append({"key": toggles.strip(), "value": bool(req) if isinstance(req, bool) else True})
+            all_.append(
+                {
+                    "key": toggles.strip(),
+                    "value": bool(req) if isinstance(req, bool) else True,
+                }
+            )
     out = {}
     if all_:
         out["all"] = all_
@@ -269,21 +302,29 @@ def _entry(key: str, spec: dict, scope: str, layout: str, group: str) -> Entry:
         layout=layout,
         group=group,
         kind=kind,
-        default=None if callable(spec.get("default")) else _typed_default(kind, spec.get("default")),
+        default=None
+        if callable(spec.get("default"))
+        else _typed_default(kind, spec.get("default")),
         min=lo,
         max=hi,
         options=options,
-        decimals=int(dec) if isinstance(dec, (int, float)) and not isinstance(dec, bool) else None,
+        decimals=int(dec)
+        if isinstance(dec, (int, float)) and not isinstance(dec, bool)
+        else None,
         label=_text(spec.get("label")),
         help=_text(spec.get("help")),
         tab=LAYOUT_TABS.get(layout),
         depends_on=depends_on(spec),
         buttons=_buttons(spec),
-        options_note="computed by VisoMaster at runtime (e.g. files found in a models folder)" if dynamic else None,
+        options_note="computed by VisoMaster at runtime (e.g. files found in a models folder)"
+        if dynamic
+        else None,
     )
 
 
-def from_layouts(layouts: Iterable[tuple[str, dict, str]], source: str = "live") -> Schema:
+def from_layouts(
+    layouts: Iterable[tuple[str, dict, str]], source: str = "live"
+) -> Schema:
     """layouts: iterable of (layout_name, LAYOUT_DATA dict, scope)."""
     schema = Schema(source=source)
     for layout_name, data, scope in layouts:
@@ -292,7 +333,9 @@ def from_layouts(layouts: Iterable[tuple[str, dict, str]], source: str = "live")
                 continue
             for key, spec in widgets.items():
                 if isinstance(key, str) and isinstance(spec, dict):
-                    schema.entries[key] = _entry(key, spec, scope, layout_name, str(group))
+                    schema.entries[key] = _entry(
+                        key, spec, scope, layout_name, str(group)
+                    )
     return schema
 
 
@@ -310,7 +353,11 @@ def _find_layout_dict(tree: ast.Module, var: str) -> ast.Dict | None:
                 return node.value
         elif isinstance(node, ast.Assign):
             for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == var and isinstance(node.value, ast.Dict):
+                if (
+                    isinstance(t, ast.Name)
+                    and t.id == var
+                    and isinstance(node.value, ast.Dict)
+                ):
                     return node.value
     return None
 
@@ -345,7 +392,9 @@ def from_source(app_dir: str | os.PathLike) -> Schema:
                         spec[pname] = _literal(pv)
                     elif pname in BUTTON_FIELDS and isinstance(pv, ast.Dict):
                         spec[pname] = {
-                            _literal(bk): _literal(bv) for bk, bv in zip(pv.keys, pv.values) if bk is not None
+                            _literal(bk): _literal(bv)
+                            for bk, bv in zip(pv.keys, pv.values)
+                            if bk is not None
                         }
                 widgets[key] = spec
             data[group] = widgets

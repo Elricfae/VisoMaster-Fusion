@@ -67,18 +67,14 @@ class TestStageTracker:
         assert tracker.update("Building engine...") == (
             "Compiling and optimizing the TensorRT engine"
         )
-        assert tracker.current_label == (
-            "Compiling and optimizing the TensorRT engine"
-        )
+        assert tracker.current_label == ("Compiling and optimizing the TensorRT engine")
 
     def test_never_moves_backwards(self):
         tracker = StageTracker()
         tracker.update("Building engine...")
         # A later line matching an earlier phase must not move the stage back.
         assert tracker.update("Attempting to load x.onnx") is None
-        assert tracker.current_label == (
-            "Compiling and optimizing the TensorRT engine"
-        )
+        assert tracker.current_label == ("Compiling and optimizing the TensorRT engine")
 
     def test_repeated_stage_is_not_reported_twice(self):
         tracker = StageTracker()

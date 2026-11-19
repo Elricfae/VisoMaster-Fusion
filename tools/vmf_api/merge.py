@@ -56,7 +56,9 @@ class PersonalRules:
             data = json.load(f)
         keys = data.get("keys", [])
         # "keys" is a list of names or a {name: why} object.
-        notes = {k: str(v) for k, v in keys.items() if v} if isinstance(keys, dict) else {}
+        notes = (
+            {k: str(v) for k, v in keys.items() if v} if isinstance(keys, dict) else {}
+        )
         return cls(
             groups=list(data.get("groups", [])),
             keys=list(keys),
@@ -83,16 +85,28 @@ class PersonalRules:
         if schema is not None:
             e = schema.get(key)
             # Groups name sections of the Settings tab only.
-            if e is not None and e.layout == "SETTINGS_LAYOUT_DATA" and e.group in self.groups:
-                return (f"part of the Settings section '{e.group}', which holds this user's own "
-                        "preferences (personal_keys.json 'groups')")
+            if (
+                e is not None
+                and e.layout == "SETTINGS_LAYOUT_DATA"
+                and e.group in self.groups
+            ):
+                return (
+                    f"part of the Settings section '{e.group}', which holds this user's own "
+                    "preferences (personal_keys.json 'groups')"
+                )
         for pat in self.patterns:
             if fnmatch.fnmatchcase(key, pat):
-                return (f"name matches '{pat}': paths, GPU, webcam or UI settings depend on this "
-                        "machine (personal_keys.json 'patterns')")
-        if self.exclude_path_like_values and (looks_like_path(incoming) or looks_like_path(current)):
-            return ("value is a file or folder path, which only exists on one machine "
-                    "(personal_keys.json 'exclude_path_like_values')")
+                return (
+                    f"name matches '{pat}': paths, GPU, webcam or UI settings depend on this "
+                    "machine (personal_keys.json 'patterns')"
+                )
+        if self.exclude_path_like_values and (
+            looks_like_path(incoming) or looks_like_path(current)
+        ):
+            return (
+                "value is a file or folder path, which only exists on one machine "
+                "(personal_keys.json 'exclude_path_like_values')"
+            )
         return None
 
 
@@ -112,10 +126,17 @@ class ImportedConfig:
 
 
 def is_workspace(data: dict) -> bool:
-    return any(k in data for k in ("target_faces_data", "target_medias_data", "input_faces_data"))
+    return any(
+        k in data
+        for k in ("target_faces_data", "target_medias_data", "input_faces_data")
+    )
 
 
-def parse_config(path: str | os.PathLike, schema: Schema | None = None, source_face: str | None = None) -> ImportedConfig:
+def parse_config(
+    path: str | os.PathLike,
+    schema: Schema | None = None,
+    source_face: str | None = None,
+) -> ImportedConfig:
     """Read a preset / workspace / VisoMaster presets-folder file."""
     path = os.fspath(path)
     with open(path, encoding="utf-8") as f:
@@ -125,8 +146,12 @@ def parse_config(path: str | os.PathLike, schema: Schema | None = None, source_f
     return parse_data(data, schema, source_face, path)
 
 
-def parse_data(data: dict, schema: Schema | None = None, source_face: str | None = None,
-               path: str | None = None) -> ImportedConfig:
+def parse_data(
+    data: dict,
+    schema: Schema | None = None,
+    source_face: str | None = None,
+    path: str | None = None,
+) -> ImportedConfig:
     """parse_config for a config already in memory. path: the file it comes from, if any (a presets-folder
     file has its controls in <name>_ctl.json next to it)."""
     if not isinstance(data, dict):
@@ -138,10 +163,14 @@ def parse_data(data: dict, schema: Schema | None = None, source_face: str | None
             for fid, fd in (data.get("target_faces_data") or {}).items()
             if isinstance(fd, dict)
         }
-        cfg = ImportedConfig(fmt="workspace", control=dict(data.get("control") or {}), faces=faces)
+        cfg = ImportedConfig(
+            fmt="workspace", control=dict(data.get("control") or {}), faces=faces
+        )
         chosen = source_face or data.get("selected_target_face_id")
         if source_face and source_face not in faces:
-            raise ValueError(f"source face '{source_face}' not in the workspace (available: {list(faces)})")
+            raise ValueError(
+                f"source face '{source_face}' not in the workspace (available: {list(faces)})"
+            )
         if chosen in faces:
             cfg.source_face = chosen
         elif faces:
@@ -154,15 +183,23 @@ def parse_data(data: dict, schema: Schema | None = None, source_face: str | None
                 )
         elif isinstance(data.get("current_widget_parameters"), dict):
             cfg.parameters = dict(data["current_widget_parameters"])
-            cfg.notes.append("no target face: parameters taken from current_widget_parameters")
-        cfg.notes.append("ignored: media, faces, embeddings, K/V maps, markers, window state")
+            cfg.notes.append(
+                "no target face: parameters taken from current_widget_parameters"
+            )
+        cfg.notes.append(
+            "ignored: media, faces, embeddings, K/V maps, markers, window state"
+        )
         return cfg
 
     if "parameters" in data or "control" in data:
         return ImportedConfig(
             fmt="preset",
-            control=dict(data["control"]) if isinstance(data.get("control"), dict) else None,
-            parameters=dict(data["parameters"]) if isinstance(data.get("parameters"), dict) else None,
+            control=dict(data["control"])
+            if isinstance(data.get("control"), dict)
+            else None,
+            parameters=dict(data["parameters"])
+            if isinstance(data.get("parameters"), dict)
+            else None,
         )
 
     # Flat dict: VisoMaster "presets/<name>.json" (+ "<name>_ctl.json") or a bare dict.
@@ -197,13 +234,19 @@ def parse_data(data: dict, schema: Schema | None = None, source_face: str | None
 class SectionPlan:
     scope: str
     changed: dict = field(default_factory=dict)  # key -> {"from", "to"}
-    excluded: dict = field(default_factory=dict)  # key -> {"reason", "incoming", "current"}
-    unknown: dict = field(default_factory=dict)  # key -> incoming value (obsolete / not in this version)
+    excluded: dict = field(
+        default_factory=dict
+    )  # key -> {"reason", "incoming", "current"}
+    unknown: dict = field(
+        default_factory=dict
+    )  # key -> incoming value (obsolete / not in this version)
     invalid: dict = field(default_factory=dict)  # key -> {"incoming", "error"}
     missing: list = field(default_factory=list)  # keys of mine absent from the file
     unchanged: int = 0
     missing_policy: str = "keep"
-    defaults_applied: dict = field(default_factory=dict)  # key -> {"from","to"} (missing_policy=default)
+    defaults_applied: dict = field(
+        default_factory=dict
+    )  # key -> {"from","to"} (missing_policy=default)
 
     @property
     def updates(self) -> dict:
@@ -259,7 +302,11 @@ def plan_section(
         reason = rules.reason(key, schema, value, cur)
         if reason:
             if not values_equal(cur, value):
-                plan.excluded[key] = {"reason": reason, "incoming": value, "current": cur}
+                plan.excluded[key] = {
+                    "reason": reason,
+                    "incoming": value,
+                    "current": cur,
+                }
             continue
         ok, coerced, msg = schema.validate(key, value)
         if not ok:
@@ -277,12 +324,17 @@ def plan_section(
             if rules.reason(key, schema, defaults[key], current[key]):
                 continue
             if not values_equal(current[key], defaults[key]):
-                plan.defaults_applied[key] = {"from": current[key], "to": copy.deepcopy(defaults[key])}
+                plan.defaults_applied[key] = {
+                    "from": current[key],
+                    "to": copy.deepcopy(defaults[key]),
+                }
     plan.missing.sort()
     return plan
 
 
-def strip_personal(values: dict, schema: Schema, rules: PersonalRules) -> tuple[dict, list]:
+def strip_personal(
+    values: dict, schema: Schema, rules: PersonalRules
+) -> tuple[dict, list]:
     """Copy of `values` without personal keys (for export)."""
     kept, removed = {}, []
     for k, v in values.items():
@@ -306,7 +358,9 @@ def select_workspace_faces(ws: dict, faces: str) -> list[str]:
         sel = ws.get("selected_target_face_id")
         return [sel] if sel in all_faces else []
     if faces not in all_faces:
-        raise ValueError(f"face '{faces}' not in the workspace (available: {all_faces})")
+        raise ValueError(
+            f"face '{faces}' not in the workspace (available: {all_faces})"
+        )
     return [faces]
 
 
@@ -323,12 +377,24 @@ def merge_into_workspace(
     """Return (new_workspace, report). `ws` is not modified."""
     new = copy.deepcopy(ws)
     report: dict = {"format": imported.fmt, "notes": list(imported.notes)}
-    param_defaults = {k: e.default for k, e in schema.entries.items() if e.scope == "parameter"}
-    control_defaults = {k: e.default for k, e in schema.entries.items() if e.scope == "control"}
+    param_defaults = {
+        k: e.default for k, e in schema.entries.items() if e.scope == "parameter"
+    }
+    control_defaults = {
+        k: e.default for k, e in schema.entries.items() if e.scope == "control"
+    }
 
     if do_control and imported.control is not None:
         cur = new.setdefault("control", {})
-        plan = plan_section(imported.control, cur, "control", schema, rules, control_defaults, missing_policy)
+        plan = plan_section(
+            imported.control,
+            cur,
+            "control",
+            schema,
+            rules,
+            control_defaults,
+            missing_policy,
+        )
         cur.update(plan.updates)
         report["control"] = plan.to_dict()
     elif do_control:
@@ -343,7 +409,15 @@ def merge_into_workspace(
             # A face saved by an older version may lack keys: use schema keys as reference too.
             ref = dict(param_defaults)
             ref.update(cur)
-            plan = plan_section(imported.parameters, ref, "parameter", schema, rules, param_defaults, missing_policy)
+            plan = plan_section(
+                imported.parameters,
+                ref,
+                "parameter",
+                schema,
+                rules,
+                param_defaults,
+                missing_policy,
+            )
             cur.update(plan.updates)
             report["parameters"][fid] = plan.to_dict()
         # Template for new faces / panel shown when no face is selected.
@@ -351,7 +425,15 @@ def merge_into_workspace(
         if isinstance(cwp, dict) and (faces in ("all", "selected") or not targets):
             ref = dict(param_defaults)
             ref.update(cwp)
-            plan = plan_section(imported.parameters, ref, "parameter", schema, rules, param_defaults, missing_policy)
+            plan = plan_section(
+                imported.parameters,
+                ref,
+                "parameter",
+                schema,
+                rules,
+                param_defaults,
+                missing_policy,
+            )
             cwp.update(plan.updates)
             report["parameters"]["<current_widget_parameters>"] = plan.to_dict()
         if not targets:

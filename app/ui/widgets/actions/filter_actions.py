@@ -107,7 +107,9 @@ def ensure_embedding_filter_worker(main_window):
 
 
 def filter_merged_embeddings(main_window: "MainWindow", *args):
-    if getattr(main_window, "_closing", False) or getattr(main_window, "_embedding_tabs_rebuilding", False):
+    if getattr(main_window, "_closing", False) or getattr(
+        main_window, "_embedding_tabs_rebuilding", False
+    ):
         return
     worker = ensure_embedding_filter_worker(main_window)
     worker.stop_thread()
@@ -143,7 +145,9 @@ def update_filtered_list(
     filter_list_widget._pending_filter_sequence = sequence
 
     def apply_update():
-        if not isValid(filter_list_widget) or (is_current is not None and not is_current()):
+        if not isValid(filter_list_widget) or (
+            is_current is not None and not is_current()
+        ):
             return
         if getattr(filter_list_widget, "_pending_filter_sequence", None) != sequence:
             return

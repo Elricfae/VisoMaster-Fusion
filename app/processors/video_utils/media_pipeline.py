@@ -8,7 +8,7 @@ import cv2
 import psutil
 import numpy
 import torch
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List, cast
 
 # --- QT & FFmpeg Logger Suppression ---
 # Silences the internal C++ demuxer probe data (Input #0...) from bleeding into the python console.
@@ -138,6 +138,24 @@ class MediaPipeline(QObject):
         self.manual_dropped_skip_count: int = 0
         self.read_error_skip_count: int = 0
         self.stopped_by_error_limit: bool = False
+
+        # --- Persistent CUDA Stream & Pinned Ring Buffers ---
+        self._detector_stream: Optional[torch.cuda.Stream] = None
+        self._video_pinned_ring_buffer: List[numpy.ndarray] = []
+        self._video_pinned_ring_shape: Optional[Tuple[int, ...]] = None
+        self._video_pinned_ring_idx: int = 0
+        self._webcam_pinned_ring_buffer: List[numpy.ndarray] = []
+        self._webcam_pinned_ring_shape: Optional[Tuple[int, ...]] = None
+        self._webcam_pinned_ring_idx: int = 0
+
+    def release_pinned_ring_buffers(self) -> None:
+        """Releases page-locked CUDA host ring buffers once producer & worker threads stop."""
+        self._video_pinned_ring_buffer.clear()
+        self._video_pinned_ring_shape = None
+        self._video_pinned_ring_idx = 0
+        self._webcam_pinned_ring_buffer.clear()
+        self._webcam_pinned_ring_shape = None
+        self._webcam_pinned_ring_idx = 0
 
     # --- BUFFER MANAGEMENT ---
 
@@ -639,14 +657,25 @@ class MediaPipeline(QObject):
             f"[INFO] Detector Thread: Starting detection loop (Mode: {'Segment' if is_segment_mode else 'Standard'})."
         )
 
-        # --- ISOLATED CUDA STREAM ---
+        # --- ISOLATED PERSISTENT CUDA STREAM ---
+        detector_stream: Optional[torch.cuda.Stream] = None
         if torch.cuda.is_available():
-            detector_stream = torch.cuda.Stream()
+            if self._detector_stream is None:
+                self._detector_stream = torch.cuda.Stream()
+            detector_stream = self._detector_stream
             torch.cuda.set_stream(detector_stream)
 
         last_marker_data = None
         self.ui_state_is_dirty = True
         current_frame_shape: Optional[Tuple[int, ...]] = None
+
+        min_safe_buffer: int = max(self.vp.num_threads * 2, 6)
+        MIN_FREE_RAM_BYTES: int = 2500 * 1024 * 1024  # 2.5 GB
+        last_mem_check_time: float = 0.0
+        is_ram_safe: bool = True
+        is_vram_safe: bool = True
+        cached_shape_for_limit: Optional[Tuple[int, ...]] = None
+        dynamic_buffer_limit: int = self.vp.max_display_buffer_size
 
         while stop_flag_check():
             try:
@@ -670,16 +699,11 @@ class MediaPipeline(QObject):
                 current_frame_shape = frame_bgr.shape
 
                 # 2. Buffer control (Adaptive VRAM & RAM Safety Net)
-                # Hoist loop-invariant calculations out of the polling loop
-                dynamic_buffer_limit: int = self._get_dynamic_max_buffer_size(
-                    current_frame_shape
-                )
-                min_safe_buffer: int = max(self.vp.num_threads * 2, 6)
-                MIN_FREE_RAM_BYTES: int = 2500 * 1024 * 1024  # 2.5 GB
-
-                last_mem_check_time: float = 0.0
-                is_ram_safe: bool = True
-                is_vram_safe: bool = True
+                if current_frame_shape != cached_shape_for_limit:
+                    cached_shape_for_limit = current_frame_shape
+                    dynamic_buffer_limit = self._get_dynamic_max_buffer_size(
+                        current_frame_shape
+                    )
 
                 while stop_flag_check():
                     in_flight_frames: int = (
@@ -695,7 +719,7 @@ class MediaPipeline(QObject):
                     if in_flight_frames > min_safe_buffer:
                         current_time = time.perf_counter()
 
-                        # Only query psutil and CUDA driver every 0.5 seconds
+                        # Only query psutil and CUDA driver every 0.5 seconds across all frames
                         if current_time - last_mem_check_time > 0.5:
                             is_ram_safe = (
                                 psutil.virtual_memory().available >= MIN_FREE_RAM_BYTES
@@ -711,9 +735,7 @@ class MediaPipeline(QObject):
                             last_mem_check_time = current_time
 
                         if not is_ram_safe or not is_vram_safe:
-                            time.sleep(
-                                0.05
-                            )  # Back off slightly longer (50ms) under memory pressure
+                            time.sleep(0.05)
                             continue
 
                     break  # Safe to proceed
@@ -760,10 +782,14 @@ class MediaPipeline(QObject):
                         self.ui_state_is_dirty = False
                         print("[INFO] Global State changed : Dirty flag cleared")
 
-                    local_params_for_worker = fast_state_copy(self._cached_params)
-                    local_control_for_worker = fast_state_copy(self._cached_control)
-                    local_params_for_worker = cast(FacesParametersTypes, {})
+                    if isinstance(self._cached_control, dict):
+                        local_control_for_worker = cast(
+                            ControlTypes, self._cached_control.copy()
+                        )
+                    else:
+                        local_control_for_worker = fast_state_copy(self._cached_control)
 
+                    local_params_for_worker = cast(FacesParametersTypes, {})
                     if self._cached_params is not None:
                         for face_id, face_data in self._cached_params.items():
                             if isinstance(face_data, dict):
@@ -773,7 +799,37 @@ class MediaPipeline(QObject):
                             else:
                                 local_params_for_worker[face_id] = face_data
 
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                # Zero-copy pinned RGB ring buffer for fast CPU->GPU DMA transfers
+                required_ring_len = dynamic_buffer_limit + self.vp.num_threads + 6
+                if (
+                    not hasattr(self, "_video_pinned_ring_buffer")
+                    or getattr(self, "_video_pinned_ring_shape", None)
+                    != current_frame_shape
+                    or len(getattr(self, "_video_pinned_ring_buffer", []))
+                    < required_ring_len
+                ):
+                    self._video_pinned_ring_shape = current_frame_shape
+                    self._video_pinned_ring_buffer = []
+                    use_pinned = (
+                        torch.cuda.is_available() and torch.cuda.is_initialized()
+                    )
+                    for _ in range(required_ring_len):
+                        if use_pinned:
+                            t = torch.empty(
+                                current_frame_shape, dtype=torch.uint8
+                            ).pin_memory()
+                            self._video_pinned_ring_buffer.append(t.numpy())
+                        else:
+                            self._video_pinned_ring_buffer.append(
+                                numpy.empty(current_frame_shape, dtype=numpy.uint8)
+                            )
+                    self._video_pinned_ring_idx = 0
+
+                frame_rgb = self._video_pinned_ring_buffer[self._video_pinned_ring_idx]
+                self._video_pinned_ring_idx = (self._video_pinned_ring_idx + 1) % len(
+                    self._video_pinned_ring_buffer
+                )
+                cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB, dst=frame_rgb)
 
                 # 4. Sequential Detection Check
                 is_swap_active = self.main_window.swapfacesButton.isChecked()
@@ -848,11 +904,10 @@ class MediaPipeline(QObject):
                     # before pushing the poison pill, preventing dropped signals.
                     continue
 
-        # --- Release the Custom CUDA Stream ---
-        if torch.cuda.is_available() and "detector_stream" in locals():
+        # --- Synchronize & Restore Default CUDA Stream (keep _detector_stream persistent) ---
+        if torch.cuda.is_available() and detector_stream is not None:
             detector_stream.synchronize()
             torch.cuda.set_stream(torch.cuda.default_stream())
-            del detector_stream
 
         print("[INFO] Detector Thread finished.")
 

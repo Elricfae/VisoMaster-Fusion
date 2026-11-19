@@ -916,8 +916,12 @@ class TargetFaceCardButton(CardButton):
                 if main_window.input_faces.get(input_face_id):
                     main_window.input_faces[input_face_id].setChecked(True)
             for embedding_id in self.assigned_merged_embeddings.keys():
-                if list_view_actions.get_all_merged_embeddings(main_window).get(embedding_id):
-                    list_view_actions.get_all_merged_embeddings(main_window)[embedding_id].setChecked(True)
+                if list_view_actions.get_all_merged_embeddings(main_window).get(
+                    embedding_id
+                ):
+                    list_view_actions.get_all_merged_embeddings(main_window)[
+                        embedding_id
+                    ].setChecked(True)
 
         main_window.selected_target_face_id = self.face_id
         main_window.current_kv_tensors_map = self.assigned_kv_map
@@ -1003,7 +1007,9 @@ class TargetFaceCardButton(CardButton):
 
             # 1. Embeddings priority
             for embedding_id in self.assigned_merged_embeddings.keys():
-                embed_button = list_view_actions.get_all_merged_embeddings(main_window).get(embedding_id)
+                embed_button = list_view_actions.get_all_merged_embeddings(
+                    main_window
+                ).get(embedding_id)
                 if not embed_button:
                     continue
 
@@ -1276,9 +1282,7 @@ class TargetFaceCardButton(CardButton):
         try:
             emb = self.get_embedding(recognition_model)
             if emb is not None:
-                removed = getattr(
-                    main_window, "_removed_target_face_embeddings", None
-                )
+                removed = getattr(main_window, "_removed_target_face_embeddings", None)
                 if removed is None:
                     removed = []
                     main_window._removed_target_face_embeddings = removed
@@ -1817,7 +1821,9 @@ class EmbeddingCardButton(CardButton):
                     embed_button.setChecked(False)
             # Other tabs
             for state in getattr(main_window, "embedding_tab_states", None) or []:
-                for embedding_id, embed_button in (state.get("embeddings") or {}).items():
+                for embedding_id, embed_button in (
+                    state.get("embeddings") or {}
+                ).items():
                     if embed_button != self:
                         try:
                             embed_button.setChecked(False)
@@ -1835,7 +1841,9 @@ class EmbeddingCardButton(CardButton):
                 for embedding_id in list(
                     cur_selected_target_face_button.assigned_merged_embeddings.keys()
                 ):
-                    embed_button = list_view_actions.get_all_merged_embeddings(main_window).get(embedding_id)
+                    embed_button = list_view_actions.get_all_merged_embeddings(
+                        main_window
+                    ).get(embedding_id)
                     if embed_button is None:
                         continue
                     if embed_button != self:

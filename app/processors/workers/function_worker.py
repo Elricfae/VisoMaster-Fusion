@@ -50,6 +50,7 @@ class FunctionWorker:
         # --- Granular Locking ---
         self._session_locks: dict[int, threading.RLock] = {}
         self._session_locks_mutex = threading.Lock()
+        self._trt_shared_context_lock = threading.Lock()
 
         # GFPGAN runs exclusively; all other ORT sessions may run concurrently.
         self._ort_gate_condition = threading.Condition()
@@ -64,7 +65,6 @@ class FunctionWorker:
         # run of each session releases the unused part of its arena.
         self._ort_shrink_generation = 0
         self._ort_shrunk_generation: dict[int, int] = {}
-        self._ort_shrink_run_options: Optional[Any] = None
 
         # Initialize Sub-Processors centrally.
         # We pass `self.mp` for VRAM management, and `self` so they can route calls through this Facade.
@@ -90,8 +90,18 @@ class FunctionWorker:
                 self._session_locks[session_id] = threading.RLock()
             return self._session_locks[session_id]
 
+    def release_session_tracking(self, session_id: int) -> None:
+        """Removes per-session lock and arena-shrink tracking when a session is unloaded."""
+        with self._session_locks_mutex:
+            self._session_locks.pop(session_id, None)
+            self._ort_shrunk_generation.pop(session_id, None)
+
     def request_ort_arena_shrink(self) -> None:
-        """Asks each ORT session to release its unused GPU arena memory on its next run."""
+        """Asks each CUDA ORT session to release its unused GPU arena memory on its next run.
+
+        Restricted to CUDA EP: TensorRT EP manages engine/context memory separately and
+        shrinking the GPU BFCArena concurrently with TRT streams can trigger hangs.
+        """
         if self.mp.provider_name != "CUDA":
             return
         with self._session_locks_mutex:
@@ -99,8 +109,8 @@ class FunctionWorker:
             self._ort_shrunk_generation.clear()
 
     def _ort_run_options(self, session: Any) -> Optional[Any]:
-        """RunOptions that shrink the session's arena, once per shrink request."""
-        if self._ort_shrink_generation == 0:
+        """Fresh RunOptions that shrink the session's arena, once per shrink request."""
+        if self.mp.provider_name != "CUDA" or self._ort_shrink_generation == 0:
             return None
         session_id = id(session)
         with self._session_locks_mutex:
@@ -108,15 +118,14 @@ class FunctionWorker:
             if self._ort_shrunk_generation.get(session_id) == generation:
                 return None
             self._ort_shrunk_generation[session_id] = generation
-            if self._ort_shrink_run_options is None:
-                import onnxruntime
 
-                run_options = onnxruntime.RunOptions()
-                run_options.add_run_config_entry(
-                    "memory.enable_memory_arena_shrinkage", f"gpu:{self.mp.gpu_id}"
-                )
-                self._ort_shrink_run_options = run_options
-            return self._ort_shrink_run_options
+        import onnxruntime
+
+        run_options = onnxruntime.RunOptions()
+        run_options.add_run_config_entry(
+            "memory.enable_memory_arena_shrinkage", f"gpu:{self.mp.gpu_id}"
+        )
+        return run_options
 
     @contextmanager
     def _ort_inference_gate(self, exclusive: bool) -> Iterator[None]:
@@ -149,7 +158,7 @@ class FunctionWorker:
                 self._ort_gate_condition.notify_all()
 
     def run_ort_with_iobinding(self, session: Any, io_binding: Any) -> None:
-        """Serialize each session and isolate GFPGAN from other ORT inference."""
+        """Serialize each session, isolate GFPGAN, and serialize shared-context TRT models."""
         session_lock = self._get_session_lock(session)
 
         # 1. PRE-INFERENCE SYNC (Outside the lock)
@@ -160,25 +169,61 @@ class FunctionWorker:
         elif self.mp.device_type != "cpu":
             self.mp.syncvec.cpu()
 
-        exclusive = self.mp.models.get("GFPGANv1.4") is session
         run_options = self._ort_run_options(session)
+        # Arena shrinkage invokes cudaFree (device-wide sync), so serialize it via the
+        # exclusive gate just like GFPGANv1.4 to avoid racing concurrent ORT sessions.
+        exclusive = (self.mp.models.get("GFPGANv1.4") is session) or (
+            run_options is not None
+        )
+        uses_shared_trt_context = id(session) in getattr(
+            self.mp, "trt_shared_context_sessions", ()
+        )
 
-        # 2. Keep GFPGAN isolated from every other ORT/TensorRT inference.
+        # 2. Keep GFPGAN and arena-shrinking runs isolated from other ORT/TensorRT inference.
         with self._ort_inference_gate(exclusive):
-            # 3. INFERENCE AND CORRECT POST-SYNC (Inside the session lock)
-            with session_lock:
-                # Execute ONNX Runtime / TensorRT.
-                if run_options is not None:
-                    session.run_with_iobinding(io_binding, run_options)
-                else:
-                    session.run_with_iobinding(io_binding)
+            # 3. Heavy TRT sessions sharing the activation scratchpad serialize with each other,
+            # while lightweight independent sessions bypass this lock and run concurrently.
+            if uses_shared_trt_context:
+                with self._trt_shared_context_lock:
+                    with session_lock:
+                        if run_options is not None:
+                            session.run_with_iobinding(io_binding, run_options)
+                        else:
+                            session.run_with_iobinding(io_binding)
+                        io_binding.synchronize_outputs()
+            else:
+                with session_lock:
+                    if run_options is not None:
+                        session.run_with_iobinding(io_binding, run_options)
+                    else:
+                        session.run_with_iobinding(io_binding)
+                    io_binding.synchronize_outputs()
 
-                # 4. POST-INFERENCE SYNC (MUST BE INSIDE BOTH LOCKS)
-                # We use ORT's native synchronization instead of PyTorch's stream sync.
-                # PyTorch stream sync does not order ORT's internal stream.
-                # This guarantees ORT is completely finished writing the pre-allocated output tensors
-                # before we release the locks to the next worker thread.
-                io_binding.synchronize_outputs()
+    def run_ort_session(
+        self, session: Any, output_names: Any, feeds: dict[str, Any]
+    ) -> Any:
+        """Thread-safe session.run() wrapper mirroring run_ort_with_iobinding locking."""
+        session_lock = self._get_session_lock(session)
+        run_options = self._ort_run_options(session)
+        exclusive = (self.mp.models.get("GFPGANv1.4") is session) or (
+            run_options is not None
+        )
+        uses_shared_trt_context = id(session) in getattr(
+            self.mp, "trt_shared_context_sessions", ()
+        )
+
+        with self._ort_inference_gate(exclusive):
+            if uses_shared_trt_context:
+                with self._trt_shared_context_lock:
+                    with session_lock:
+                        if run_options is not None:
+                            return session.run(output_names, feeds, run_options)
+                        return session.run(output_names, feeds)
+            else:
+                with session_lock:
+                    if run_options is not None:
+                        return session.run(output_names, feeds, run_options)
+                    return session.run(output_names, feeds)
 
     # --- Models Unloaders ---
 

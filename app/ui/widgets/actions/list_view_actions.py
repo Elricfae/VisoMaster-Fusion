@@ -622,7 +622,7 @@ def select_target_medias(
         files_list = QtWidgets.QFileDialog.getOpenFileNames()[0]
         if not files_list:
             return
-    # Get Folder name from the first file
+        # Get Folder name from the first file
         file_dir = misc_helpers.get_dir_of_file(files_list[0])
         main_window.targetVideosPathLineEdit.setText(file_dir)
         main_window.targetVideosPathLineEdit.setToolTip(file_dir)
@@ -1632,10 +1632,7 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
     new_files = [
         p
         for p in media_files
-        if p not in existing
-        and p not in seen
-        and p not in ignored
-        and p not in loading
+        if p not in existing and p not in seen and p not in ignored and p not in loading
     ]
     if not new_files:
         return
@@ -1752,9 +1749,7 @@ def _remove_subfolder_target_media(main_window: "MainWindow", folder: str) -> No
     seen = getattr(main_window, "_target_folder_seen_paths", None)
     if seen is not None:
         kept = {
-            p
-            for p in list(seen)
-            if _normalize_media_path(os.path.dirname(p)) == root
+            p for p in list(seen) if _normalize_media_path(os.path.dirname(p)) == root
         }
         main_window._target_folder_seen_paths = kept
 
@@ -1909,6 +1904,7 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
 
     scan_and_append_new_target_media(main_window)
 
+
 class _SmoothWheelFilter(QtCore.QObject):
     def __init__(self, list_widget: QtWidgets.QListWidget):
         super().__init__(list_widget)
@@ -1937,6 +1933,7 @@ def _install_smooth_wheel_filter(list_widget: QtWidgets.QListWidget) -> None:
     filt = _SmoothWheelFilter(list_widget)
     list_widget.viewport().installEventFilter(filt)
     list_widget._smooth_wheel_filter = filt
+
 
 def _make_embeddings_list_widget(main_window: "MainWindow") -> QtWidgets.QListWidget:
     """Create a list widget configured like the original inputEmbeddingsList."""
@@ -2030,9 +2027,7 @@ def setup_embedding_tabs(main_window: "MainWindow") -> None:
     add_btn.clicked.connect(partial(add_embedding_tab, main_window))
 
     tabs_container_layout.addWidget(tabs, 1)
-    tabs_container_layout.addWidget(
-        add_btn, 0, QtCore.Qt.AlignmentFlag.AlignTop
-    )
+    tabs_container_layout.addWidget(add_btn, 0, QtCore.Qt.AlignmentFlag.AlignTop)
 
     if layout is not None:
         idx = layout.indexOf(old_list)
@@ -2069,8 +2064,11 @@ def setup_embedding_tabs(main_window: "MainWindow") -> None:
     )
 
     tabs.currentChanged.connect(partial(_on_embedding_tab_changed, main_window))
-    tabs.tabBar().tabMoved.connect(lambda *_: _activate_embedding_tab(main_window, tabs.currentIndex()))
+    tabs.tabBar().tabMoved.connect(
+        lambda *_: _activate_embedding_tab(main_window, tabs.currentIndex())
+    )
     tabs.tabCloseRequested.connect(partial(_on_embedding_tab_close, main_window))
+
 
 def add_embedding_tab(
     main_window: "MainWindow",
@@ -2103,7 +2101,9 @@ def add_embedding_tab(
 
 def stop_embedding_filter_worker(main_window):
     """Cancel scheduled filters, then join before replacing/deleting their list."""
-    main_window._embedding_filter_sequence = getattr(main_window, "_embedding_filter_sequence", 0) + 1
+    main_window._embedding_filter_sequence = (
+        getattr(main_window, "_embedding_filter_sequence", 0) + 1
+    )
     worker = getattr(main_window, "merged_embeddings_filter_worker", None)
     if worker is not None:
         worker.retire()
@@ -2121,14 +2121,18 @@ def stop_filter_workers(main_window):
             setattr(main_window, name, None)
 
 
-def _activate_embedding_tab(main_window: "MainWindow", index: int, *, filter_after=True) -> None:
+def _activate_embedding_tab(
+    main_window: "MainWindow", index: int, *, filter_after=True
+) -> None:
     states = getattr(main_window, "embedding_tab_states", [])
     if index < 0 or index >= len(states):
         return
     # Qt can emit currentChanged before tabMoved; resolve by widget identity.
     by_widget = {state["list_widget"]: state for state in states}
-    states[:] = [by_widget[main_window.embeddingTabs.widget(i)]
-                 for i in range(main_window.embeddingTabs.count())]
+    states[:] = [
+        by_widget[main_window.embeddingTabs.widget(i)]
+        for i in range(main_window.embeddingTabs.count())
+    ]
     state = states[index]
     worker = getattr(main_window, "merged_embeddings_filter_worker", None)
     if worker is not None and worker.filter_list_widget is not state["list_widget"]:
@@ -2137,7 +2141,9 @@ def _activate_embedding_tab(main_window: "MainWindow", index: int, *, filter_aft
     main_window.merged_embeddings = state["embeddings"]
     main_window.loaded_embedding_filename = state["filename"]
 
-    if getattr(main_window, "_closing", False) or getattr(main_window, "_embedding_tabs_rebuilding", False):
+    if getattr(main_window, "_closing", False) or getattr(
+        main_window, "_embedding_tabs_rebuilding", False
+    ):
         return
     filter_actions.ensure_embedding_filter_worker(main_window)
 
@@ -2151,8 +2157,9 @@ def _activate_embedding_tab(main_window: "MainWindow", index: int, *, filter_aft
             main_window._embedding_filter_sequence = sequence
 
             def filter_active_tab():
-                if (getattr(main_window, "_embedding_filter_sequence", None) == sequence
-                        and not getattr(main_window, "_closing", False)):
+                if getattr(
+                    main_window, "_embedding_filter_sequence", None
+                ) == sequence and not getattr(main_window, "_closing", False):
                     filter_actions.filter_merged_embeddings(main_window)
 
             QtCore.QTimer.singleShot(0, filter_active_tab)
@@ -2228,8 +2235,13 @@ def get_embedding_tabs_state(main_window: "MainWindow") -> dict:
         title = ""
         if tabs is not None and i < tabs.count():
             title = tabs.tabText(i)
-        out.append({"filename": filename, "title": title,
-                    "embedding_ids": list(state["embeddings"])})
+        out.append(
+            {
+                "filename": filename,
+                "title": title,
+                "embedding_ids": list(state["embeddings"]),
+            }
+        )
     return {"tabs": out, "active_index": max(0, active)}
 
 
@@ -2253,7 +2265,7 @@ def reset_embedding_tabs(main_window):
     for state in main_window.embedding_tab_states[1:]:
         state["list_widget"].deleteLater()
     while tabs.count() > 1:
-        tabs.removeTab(tabs.count()-1)
+        tabs.removeTab(tabs.count() - 1)
     main_window.embedding_tab_states[:] = main_window.embedding_tab_states[:1]
     tabs.blockSignals(False)
     _activate_embedding_tab(main_window, 0, filter_after=False)
@@ -2285,14 +2297,16 @@ def _restore_embedding_tabs_contents(main_window, data):
     if tabs is None or not infos:
         return
     registry = get_all_merged_embeddings(main_window)
-    active = min(max(0, int(data.get("active_index", 0))), len(infos)-1)
+    active = min(max(0, int(data.get("active_index", 0))), len(infos) - 1)
     for i, info in enumerate(infos):
         if i:
-            add_embedding_tab(main_window, title=info.get("title") or f"Embeddings {i+1}")
+            add_embedding_tab(
+                main_window, title=info.get("title") or f"Embeddings {i + 1}"
+            )
         state = main_window.embedding_tab_states[i]
         state["embeddings"] = {}
         state["filename"] = info.get("filename") or ""
-        tabs.setTabText(i, info.get("title") or f"Embeddings {i+1}")
+        tabs.setTabText(i, info.get("title") or f"Embeddings {i + 1}")
         tabs.setTabToolTip(i, state["filename"])
     owned = set()
     for i, info in enumerate(infos):
@@ -2305,7 +2319,7 @@ def _restore_embedding_tabs_contents(main_window, data):
             owned.add(eid)
     # Preserve inline entries absent from legacy/incomplete tab metadata.
     state = main_window.embedding_tab_states[active]
-    for eid in registry.keys()-owned:
+    for eid in registry.keys() - owned:
         _place_restored_embedding(main_window, state, eid, registry[eid])
     tabs.setCurrentIndex(active)
     _activate_embedding_tab(main_window, active)

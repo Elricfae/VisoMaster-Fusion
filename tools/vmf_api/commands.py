@@ -63,10 +63,17 @@ COMMANDS: dict[str, Command] = {}
 _TRT_JOB: dict | None = None
 
 
-def command(name: str, write: bool = False, timeout: float = 30.0, main_thread: bool = True):
+def command(
+    name: str, write: bool = False, timeout: float = 30.0, main_thread: bool = True
+):
     def deco(fn):
-        COMMANDS[name] = Command(fn, write=write, timeout=timeout, help=(fn.__doc__ or "").strip(),
-                                 main_thread=main_thread)
+        COMMANDS[name] = Command(
+            fn,
+            write=write,
+            timeout=timeout,
+            help=(fn.__doc__ or "").strip(),
+            main_thread=main_thread,
+        )
         return fn
 
     return deco
@@ -136,15 +143,23 @@ def _job_running(mw) -> bool:
         return False
 
 
-_FINALIZING = {"on": False}  # VisoMaster is closing the encoder / merging audio / saving (see _wrap_finalize)
+_FINALIZING = {
+    "on": False
+}  # VisoMaster is closing the encoder / merging audio / saving (see _wrap_finalize)
 
 
 def _recording(mw) -> bool:
     # VisoMaster sets recording=False as soon as it closes the encoder, before the file is written:
     # the finalization still counts as recording.
     vp = getattr(mw, "video_processor", None)
-    return bool(vp is not None and (getattr(vp, "recording", False) or getattr(vp, "is_processing_segments", False)
-                                    or _FINALIZING["on"]))
+    return bool(
+        vp is not None
+        and (
+            getattr(vp, "recording", False)
+            or getattr(vp, "is_processing_segments", False)
+            or _FINALIZING["on"]
+        )
+    )
 
 
 def _vram(mw) -> dict | None:
@@ -156,7 +171,11 @@ def _vram(mw) -> dict | None:
         return None
     if not total:
         return None
-    return {"used_mb": int(used), "total_mb": int(total), "percent": round(100.0 * used / total, 1)}
+    return {
+        "used_mb": int(used),
+        "total_mb": int(total),
+        "percent": round(100.0 * used / total, 1),
+    }
 
 
 def _swap_state(mw) -> dict:
@@ -166,13 +185,21 @@ def _swap_state(mw) -> dict:
     for fid, face in (getattr(mw, "target_faces", {}) or {}).items():
         inputs = len(getattr(face, "assigned_input_faces", {}) or {})
         embeds = len(getattr(face, "assigned_merged_embeddings", {}) or {})
-        faces[fid] = {"input_faces": inputs, "embeddings": embeds, "has_source": bool(inputs or embeds)}
+        faces[fid] = {
+            "input_faces": inputs,
+            "embeddings": embeds,
+            "has_source": bool(inputs or embeds),
+        }
     enabled = bool(btn.isChecked()) if btn is not None else None
     state = {"enabled": enabled, "faces": faces}
     if enabled is False:
-        state["note"] = "swap is off (Clear VRAM turns it off): run_action swapfacesButton to turn it on"
+        state["note"] = (
+            "swap is off (Clear VRAM turns it off): run_action swapfacesButton to turn it on"
+        )
     elif faces and not any(f["has_source"] for f in faces.values()):
-        state["note"] = "no target face has a source: select_embedding or assign input faces"
+        state["note"] = (
+            "no target face has a source: select_embedding or assign input faces"
+        )
     return state
 
 
@@ -186,9 +213,13 @@ _LOADS: dict = {"inflight": {}, "recent": []}  # recent: {"model", "seconds", "a
 # shape inference): running = stack of {"step", "model", "t0"}, done = {"step", "model", "seconds", "at"}
 _BUILDS: dict = {"running": [], "done": []}
 _LOAD_STORES = {"load_model": "models", "load_dfm_model": "dfm_models"}
-NOT_READY = "not ready: "  # prefix of the start_recording error, recognized by the CLI / MCP
+NOT_READY = (
+    "not ready: "  # prefix of the start_recording error, recognized by the CLI / MCP
+)
 # Hints name the command for every client: MCP tool, CLI subcommand, plain HTTP (no wait endpoint).
-WAIT_THEN = "Call wait_ready (CLI: ready-wait; HTTP: poll ready_status until ready), then "
+WAIT_THEN = (
+    "Call wait_ready (CLI: ready-wait; HTTP: poll ready_status until ready), then "
+)
 WAIT_REC = "wait_recording (CLI: recording-wait; HTTP: poll recording_status until active=false)"
 
 
@@ -278,7 +309,9 @@ def _build_started(title, text="", *a):
     lines = [x.strip() for x in str(text).splitlines() if x.strip()]
     model = lines[1] if len(lines) > 1 else (lines[0] if lines else None)
     with _LOADS_LOCK:
-        _BUILDS["running"].append({"step": str(title), "model": model, "t0": time.time()})
+        _BUILDS["running"].append(
+            {"step": str(title), "model": model, "t0": time.time()}
+        )
 
 
 def _build_finished(*a):
@@ -286,21 +319,34 @@ def _build_finished(*a):
         if not _BUILDS["running"]:
             return
         b = _BUILDS["running"].pop()
-        _BUILDS["done"].append({"step": b["step"], "model": b["model"],
-                                "seconds": round(time.time() - b["t0"], 1), "at": time.time()})
+        _BUILDS["done"].append(
+            {
+                "step": b["step"],
+                "model": b["model"],
+                "seconds": round(time.time() - b["t0"], 1),
+                "at": time.time(),
+            }
+        )
         del _BUILDS["done"][:-30]
 
 
 def _builds_between(t0: float, t1: float) -> list:
     with _LOADS_LOCK:
-        return [{k: b[k] for k in ("step", "model", "seconds")} for b in _BUILDS["done"]
-                if t0 <= b["at"] - b["seconds"] and b["at"] <= t1 + 1]
+        return [
+            {k: b[k] for k in ("step", "model", "seconds")}
+            for b in _BUILDS["done"]
+            if t0 <= b["at"] - b["seconds"] and b["at"] <= t1 + 1
+        ]
 
 
 def _wrap_load(mp, fn, store):
     def load(*a, **k):
         model = a[0] if a else next(iter(k.values()), "?")
-        model = ", ".join(map(str, model)) if isinstance(model, (list, tuple)) else str(model)
+        model = (
+            ", ".join(map(str, model))
+            if isinstance(model, (list, tuple))
+            else str(model)
+        )
         try:
             cached = bool((getattr(mp, store, None) or {}).get(model))
         except Exception:
@@ -317,7 +363,9 @@ def _wrap_load(mp, fn, store):
             with _LOADS_LOCK:
                 _LOADS["inflight"].pop(token, None)
                 if dt >= 0.05:
-                    _LOADS["recent"].append({"model": model, "seconds": round(dt, 2), "at": time.time()})
+                    _LOADS["recent"].append(
+                        {"model": model, "seconds": round(dt, 2), "at": time.time()}
+                    )
                     del _LOADS["recent"][:-30]
 
     load._vmf_wrapped = True
@@ -327,15 +375,21 @@ def _wrap_load(mp, fn, store):
 
 def _loads_between(t0: float, t1: float) -> list:
     with _LOADS_LOCK:
-        return [{"model": r["model"], "seconds": r["seconds"]} for r in _LOADS["recent"]
-                if t0 <= r["at"] - r["seconds"] and r["at"] <= t1 + 1]
+        return [
+            {"model": r["model"], "seconds": r["seconds"]}
+            for r in _LOADS["recent"]
+            if t0 <= r["at"] - r["seconds"] and r["at"] <= t1 + 1
+        ]
 
 
 def _lazy_pending(mw) -> list:
     """Models whose TensorRT engine VisoMaster will compile at their first real use (cannot be built
     in advance)."""
     try:
-        return sorted(getattr(getattr(mw, "models_processor", None), "models_pending_build", None) or ())
+        return sorted(
+            getattr(getattr(mw, "models_processor", None), "models_pending_build", None)
+            or ()
+        )
     except Exception:
         return []
 
@@ -346,7 +400,11 @@ def _engines_since(t0: float) -> list:
     out = []
     try:
         for p in root.rglob("*"):
-            if p.is_file() and p.suffix in (".engine", ".onnx") and p.stat().st_mtime >= t0:
+            if (
+                p.is_file()
+                and p.suffix in (".engine", ".onnx")
+                and p.stat().st_mtime >= t0
+            ):
                 out.append(p.name)
     except Exception:
         pass
@@ -371,8 +429,10 @@ def _media_loading(mw) -> list:
     """Target media / input faces still being loaded by VisoMaster's loader threads (load_target_media
     and load_input_faces return at once; the cards arrive one by one)."""
     out = []
-    for attr, what, store in (("video_loader_worker", "target media", "target_videos"),
-                              ("input_faces_loader_worker", "input faces", "input_faces")):
+    for attr, what, store in (
+        ("video_loader_worker", "target media", "target_videos"),
+        ("input_faces_loader_worker", "input faces", "input_faces"),
+    ):
         w = getattr(mw, attr, None)
         try:
             running = bool(w is not None and w.isRunning())
@@ -380,13 +440,23 @@ def _media_loading(mw) -> list:
             running = False
         # Cards read by the loader but not added yet (VisoMaster adds them in batches on a timer).
         try:
-            pending = len(getattr(mw, f"_pending_{'target_media' if store == 'target_videos' else 'input_face'}"
-                                      "_thumbnails", None) or ())
+            pending = len(
+                getattr(
+                    mw,
+                    f"_pending_{'target_media' if store == 'target_videos' else 'input_face'}"
+                    "_thumbnails",
+                    None,
+                )
+                or ()
+            )
         except Exception:
             pending = 0
         if running or pending:
-            out.append(f"loading {what} ({len(getattr(mw, store, {}) or {})} so far"
-                       + (f", {pending} waiting to be added" if pending else "") + ")")
+            out.append(
+                f"loading {what} ({len(getattr(mw, store, {}) or {})} so far"
+                + (f", {pending} waiting to be added" if pending else "")
+                + ")"
+            )
     return out
 
 
@@ -395,15 +465,23 @@ def _readiness(mw) -> dict:
     nothing busy? Plain reads only (safe outside the UI thread)."""
     now = time.time()
     with _LOADS_LOCK:
-        loading = [{"model": m, "for_s": round(now - t0, 1)} for m, t0 in _LOADS["inflight"].values()]
+        loading = [
+            {"model": m, "for_s": round(now - t0, 1)}
+            for m, t0 in _LOADS["inflight"].values()
+        ]
         recent = [dict(r) for r in _LOADS["recent"][-5:]]
-        building = [{"step": b["step"], "model": b["model"], "for_s": round(now - b["t0"], 1)}
-                    for b in _BUILDS["running"]]
+        building = [
+            {"step": b["step"], "model": b["model"], "for_s": round(now - b["t0"], 1)}
+            for b in _BUILDS["running"]
+        ]
     waiting = []
     for b in building:
         waiting.append(f"TensorRT: {b['step']} ({b['model']}, {b['for_s']} s)")
     if loading:
-        waiting.append("loading models: " + ", ".join(f"{x['model']} ({x['for_s']} s)" for x in loading))
+        waiting.append(
+            "loading models: "
+            + ", ".join(f"{x['model']} ({x['for_s']} s)" for x in loading)
+        )
     waiting += _media_loading(mw)
     busy = busy_reason(mw)
     if busy:
@@ -466,7 +544,11 @@ def _install_output_hook():
 
 def _frames_written(vp, rec) -> int:
     """Frames this recording sent to the encoder: VisoMaster's counter minus its value at the start."""
-    return max(0, int(getattr(vp, "frames_written", 0) or 0) - int(rec.get("written_base", 0) or 0))
+    return max(
+        0,
+        int(getattr(vp, "frames_written", 0) or 0)
+        - int(rec.get("written_base", 0) or 0),
+    )
 
 
 def _segments(vp) -> list:
@@ -474,7 +556,10 @@ def _segments(vp) -> list:
     if not getattr(vp, "is_processing_segments", False):
         return []
     try:
-        return [(int(s), int(e)) for s, e in (getattr(vp, "segments_to_process", None) or [])]
+        return [
+            (int(s), int(e))
+            for s, e in (getattr(vp, "segments_to_process", None) or [])
+        ]
     except (TypeError, ValueError):
         return []
 
@@ -483,7 +568,11 @@ def _rec_progress(vp, rec) -> dict:
     written = _frames_written(vp, rec)
     total = rec.get("total_frames") or 0
     elapsed = time.time() - rec["started_at"]
-    out = {"frames_written": written, "total_frames": total or None, "elapsed_s": round(elapsed, 1)}
+    out = {
+        "frames_written": written,
+        "total_frames": total or None,
+        "elapsed_s": round(elapsed, 1),
+    }
     if total:
         out["percent"] = round(min(100.0, 100.0 * written / total), 1)
     if written and elapsed > 0:
@@ -555,7 +644,9 @@ def _wrap_finalize(fn, mw=None):
     def finalize(*a, **k):
         try:
             if _REC.get("active"):
-                _REC["finalize_started"] = time.perf_counter()  # same clock as VisoMaster's start/end_time
+                _REC["finalize_started"] = (
+                    time.perf_counter()
+                )  # same clock as VisoMaster's start/end_time
         except Exception:
             pass
         _FINALIZING["on"] = True
@@ -603,7 +694,9 @@ def _rec_update(mw, install_hooks: bool = True) -> dict | None:
 
 def _rec_start_time(vp, written: int) -> float:
     """Wall-clock start of a recording first seen while it runs (started from VisoMaster's UI)."""
-    t0 = getattr(vp, "start_time", None)  # VisoMaster's perf_counter() at the start of processing
+    t0 = getattr(
+        vp, "start_time", None
+    )  # VisoMaster's perf_counter() at the start of processing
     try:
         ago = time.perf_counter() - float(t0)
         if 0 <= ago < 7 * 86400:
@@ -611,7 +704,9 @@ def _rec_start_time(vp, written: int) -> float:
     except (TypeError, ValueError):
         pass
     # Fallback, too late when processing is slower than real time: frames written at the media fps.
-    return time.time() - (written / float(vp.fps) if written and getattr(vp, "fps", 0) else 0)
+    return time.time() - (
+        written / float(vp.fps) if written and getattr(vp, "fps", 0) else 0
+    )
 
 
 def _rec_update_locked(mw, install_hooks: bool) -> dict | None:
@@ -625,7 +720,9 @@ def _rec_update_locked(mw, install_hooks: bool) -> dict | None:
     if active and _REC.get("active") and _REC.get("vp_start") not in (None, vp_start):
         # A new recording started before the end of the previous one was seen: close the old record first
         # (with its last progress, frames_written already belongs to the new recording).
-        _rec_finish(mw, vp, int((_REC.get("progress") or {}).get("frames_written", 0) or 0))
+        _rec_finish(
+            mw, vp, int((_REC.get("progress") or {}).get("frames_written", 0) or 0)
+        )
     if active and not _REC.get("active"):
         written = int(getattr(vp, "frames_written", 0) or 0)
         base = 0
@@ -666,7 +763,9 @@ def _rec_update_locked(mw, install_hooks: bool) -> dict | None:
         if active:
             _REC["progress"] = _rec_progress(vp, _REC)
             if _FINALIZING["on"]:
-                _REC["progress"]["phase"] = "finalizing: closing the encoder, audio merge, saving the file"
+                _REC["progress"]["phase"] = (
+                    "finalizing: closing the encoder, audio merge, saving the file"
+                )
         else:
             _rec_finish(mw, vp)
     return _REC
@@ -695,11 +794,15 @@ def _rec_finish(mw, vp, written: int | None = None) -> None:
         "size_bytes": Path(out).stat().st_size if exists else None,
         "incomplete": bool(out and "_incomplete" in Path(out).stem),
         "frames_written": written,
-        "duration_s": round(written / _REC["fps"], 2) if _REC.get("fps") and written else None,
+        "duration_s": round(written / _REC["fps"], 2)
+        if _REC.get("fps") and written
+        else None,
         "elapsed_s": round(time.time() - _REC["started_at"], 1),
     }
     if not exists:
-        _REC["result"]["hint"] = "no output file found: see the VisoMaster console for the error"
+        _REC["result"]["hint"] = (
+            "no output file found: see the VisoMaster console for the error"
+        )
     # VisoMaster's own measure, the one it prints as "Processing completed in ..." (from the
     # start of processing to the end of finalization, audio merge included).
     t0, t1 = getattr(vp, "start_time", None), getattr(vp, "end_time", None)
@@ -730,7 +833,9 @@ def _rec_finish(mw, vp, written: int | None = None) -> None:
     if compiled or engines or builds:
         # builds: each TensorRT step with its duration (e.g. the lazy build's compile time)
         _REC["result"]["tensorrt_compiled_during_recording"] = {
-            "models": compiled, "engine_files": engines, "builds": builds,
+            "models": compiled,
+            "engine_files": engines,
+            "builds": builds,
             "build_time_s": round(sum(b["seconds"] for b in builds), 1),
         }
         _REC["result"]["note"] = (
@@ -749,7 +854,11 @@ def _rec_finish(mw, vp, written: int | None = None) -> None:
             )
     v = _vram(mw)
     end = v["used_mb"] if v else None
-    samples = [x for x in (_REC.get("vram_start_mb"), _REC.get("vram_peak_mb"), end) if x is not None]
+    samples = [
+        x
+        for x in (_REC.get("vram_start_mb"), _REC.get("vram_peak_mb"), end)
+        if x is not None
+    ]
     _REC["result"]["vram_mb"] = {
         "start": _REC.get("vram_start_mb"),
         "peak": max(samples) if samples else None,
@@ -764,8 +873,20 @@ _REC_STARTER: dict = {}
 def _rec_view(rec: dict | None) -> dict | None:
     if not rec:
         return None
-    keys = ("id", "active", "started_by", "media", "start_frame", "total_frames", "segments", "fps", "output_folder",
-            "swap_enabled", "progress", "result")
+    keys = (
+        "id",
+        "active",
+        "started_by",
+        "media",
+        "start_frame",
+        "total_frames",
+        "segments",
+        "fps",
+        "output_folder",
+        "swap_enabled",
+        "progress",
+        "result",
+    )
     return {k: rec[k] for k in keys if k in rec}
 
 
@@ -854,15 +975,27 @@ def _git_info() -> dict:
     info = {"branch": None, "commit": None}
     git = common = APP_DIR / ".git"
     try:
-        if git.is_file():  # a worktree: ".git" holds "gitdir: <repo>/.git/worktrees/<name>"
+        if (
+            git.is_file()
+        ):  # a worktree: ".git" holds "gitdir: <repo>/.git/worktrees/<name>"
             text = git.read_text(encoding="utf-8").strip()
-            git = common = Path(text[len("gitdir:"):].strip()) if text.startswith("gitdir:") else git
-            if (git / "commondir").is_file():  # refs and packed-refs live in the main .git
-                common = (git / (git / "commondir").read_text(encoding="utf-8").strip()).resolve()
+            git = common = (
+                Path(text[len("gitdir:") :].strip())
+                if text.startswith("gitdir:")
+                else git
+            )
+            if (
+                git / "commondir"
+            ).is_file():  # refs and packed-refs live in the main .git
+                common = (
+                    git / (git / "commondir").read_text(encoding="utf-8").strip()
+                ).resolve()
         head = (git / "HEAD").read_text(encoding="utf-8").strip()
         if head.startswith("ref: "):
             ref = head[5:]
-            info["branch"] = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+            info["branch"] = (
+                ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+            )
             git = common
             ref_file = git / ref
             if ref_file.is_file():
@@ -882,7 +1015,9 @@ def _git_info() -> dict:
 
 def _version() -> str | None:
     try:
-        return json.loads((APP_DIR / "version.json").read_text(encoding="utf-8")).get("version")
+        return json.loads((APP_DIR / "version.json").read_text(encoding="utf-8")).get(
+            "version"
+        )
     except Exception:
         return None
 
@@ -898,7 +1033,9 @@ def _abs(path: str | None) -> Path | None:
         return None
     path = os.path.expandvars(os.path.expanduser(path))
     if _is_network_path(path):
-        raise CommandError(f"refused: network or device path ({path}): use a local file or folder")
+        raise CommandError(
+            f"refused: network or device path ({path}): use a local file or folder"
+        )
     return Path(path).resolve()
 
 
@@ -914,11 +1051,15 @@ def _out_path(path: str | None, suffix: str, allowed: tuple = ()) -> Path | None
     if p not in [Path(a).resolve() for a in allowed]:
         for root in (APP_DIR, VMF_DIR):
             if p.is_relative_to(root.resolve()):
-                raise CommandError(f"refused: {p} is inside {root} (VisoMaster's or vmf_api's own files): "
-                                   f"choose another folder, or leave the path out for the default")
+                raise CommandError(
+                    f"refused: {p} is inside {root} (VisoMaster's or vmf_api's own files): "
+                    f"choose another folder, or leave the path out for the default"
+                )
         if p.exists() and not _replaceable(p):
-            raise CommandError(f"refused: {p} already exists and is not a VisoMaster config or workspace: "
-                               f"choose a new file name")
+            raise CommandError(
+                f"refused: {p} already exists and is not a VisoMaster config or workspace: "
+                f"choose a new file name"
+            )
     return p
 
 
@@ -931,7 +1072,9 @@ def _replaceable(p: Path) -> bool:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(data, dict) and any(k in data for k in ("control", "parameters", "_vmf_export"))
+    return isinstance(data, dict) and any(
+        k in data for k in ("control", "parameters", "_vmf_export")
+    )
 
 
 OVERWRITTEN_DIR = BACKUP_DIR / "overwritten"
@@ -957,7 +1100,9 @@ def _prune(folder: Path, pattern: str, keep: int, min_age_days: float = 0) -> No
     """Delete all but the `keep` most recent files of folder/pattern (backups the API itself wrote), and only
     those older than `min_age_days`."""
     try:
-        files = sorted(folder.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+        files = sorted(
+            folder.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True
+        )
         limit = time.time() - min_age_days * 86400
         for f in files[keep:]:
             if f.is_file() and f.stat().st_mtime < limit:
@@ -1031,7 +1176,9 @@ def _apply_control_updates(mw, updates: dict) -> list:
     for k, v in updates.items():
         try:
             _set_widget(mw, k, v)
-            if k == "OutputMediaFolder":  # no widget of its own: VisoMaster's batch and Save Image check this field
+            if (
+                k == "OutputMediaFolder"
+            ):  # no widget of its own: VisoMaster's batch and Save Image check this field
                 line = getattr(mw, "outputFolderLineEdit", None)
                 if line is not None:
                     line.setText(str(v or ""))
@@ -1058,10 +1205,16 @@ def _param_specs() -> dict:
             from app.ui.widgets.face_editor_layout_data import FACE_EDITOR_LAYOUT_DATA
             from app.ui.widgets.swapper_layout_data import SWAPPER_LAYOUT_DATA
 
-            for data in (COMMON_LAYOUT_DATA, SWAPPER_LAYOUT_DATA, FACE_EDITOR_LAYOUT_DATA):
+            for data in (
+                COMMON_LAYOUT_DATA,
+                SWAPPER_LAYOUT_DATA,
+                FACE_EDITOR_LAYOUT_DATA,
+            ):
                 for widgets in (data or {}).values():
                     if isinstance(widgets, dict):
-                        specs.update({k: v for k, v in widgets.items() if isinstance(v, dict)})
+                        specs.update(
+                            {k: v for k, v in widgets.items() if isinstance(v, dict)}
+                        )
         except Exception:
             pass
         _PARAM_SPECS = specs
@@ -1093,7 +1246,9 @@ def _run_param_exec(mw, old: dict, new: dict) -> list:
     return errors
 
 
-def _apply_param_updates(mw, face_ids: list, updates_by_face: dict, cwp_updates: dict | None) -> list:
+def _apply_param_updates(
+    mw, face_ids: list, updates_by_face: dict, cwp_updates: dict | None
+) -> list:
     """Write face parameters like VisoMaster does (data, widgets, feeder, exec_function of the changed
     keys of the shown panel). Returns the exec_function errors."""
     from app.helpers.miscellaneous import ParametersDict
@@ -1122,10 +1277,18 @@ def _apply_param_updates(mw, face_ids: list, updates_by_face: dict, cwp_updates:
 
 def _snapshot_state(mw) -> dict:
     return {
-        "_vmf_backup": {"created": time.strftime("%Y-%m-%dT%H:%M:%S"), "version": _version(), **_git_info()},
+        "_vmf_backup": {
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "version": _version(),
+            **_git_info(),
+        },
         "control": copy.deepcopy(dict(mw.control)),
-        "faces": {fid: _plain(p) for fid, p in (getattr(mw, "parameters", {}) or {}).items()},
-        "current_widget_parameters": _plain(getattr(mw, "current_widget_parameters", None)),
+        "faces": {
+            fid: _plain(p) for fid, p in (getattr(mw, "parameters", {}) or {}).items()
+        },
+        "current_widget_parameters": _plain(
+            getattr(mw, "current_widget_parameters", None)
+        ),
         "selected_target_face_id": _selected_face(mw),
     }
 
@@ -1138,7 +1301,9 @@ def _backup_path(label: str) -> Path:
     p, n = BACKUP_DIR / f"{stamp}-{label}.json", 1
     while p.exists():
         n += 1
-        p = BACKUP_DIR / f"{stamp}.{n}-{label}.json"  # sorts after the first one: list order stays by time
+        p = (
+            BACKUP_DIR / f"{stamp}.{n}-{label}.json"
+        )  # sorts after the first one: list order stays by time
     return p
 
 
@@ -1169,7 +1334,9 @@ def cmd_status(ctx):
         "scan_active": _scan_active(mw),
         "job_queue_running": _job_running(mw),
         "tensorrt_building": _trt_building(mw),
-        "provider": getattr(getattr(mw, "models_processor", None), "provider_name", None),
+        "provider": getattr(
+            getattr(mw, "models_processor", None), "provider_name", None
+        ),
         "busy": busy_reason(mw),
         "ready": _readiness(mw),
         "media": {
@@ -1208,7 +1375,11 @@ def cmd_recording_status(ctx):
         rec_t0 = _REC.get("started_at") or 0
         # A batch with videos records each one: those recordings belong to the batch, which is reported
         # until it ends (else wait_recording would return after its first video).
-        if batch["active"] or rec_t0 <= batch["started_at"] or rec_t0 <= (_BATCH.get("finished_at") or 0):
+        if (
+            batch["active"]
+            or rec_t0 <= batch["started_at"]
+            or rec_t0 <= (_BATCH.get("finished_at") or 0)
+        ):
             if batch["active"] and rec is not None and rec.get("active"):
                 batch["current_video"] = rec.get("progress")
             return batch
@@ -1231,7 +1402,12 @@ def cmd_get_config(ctx, face_id: str | None = None, keys: list | None = None):
 
 
 @command("export_config")
-def cmd_export_config(ctx, path: str | None = None, face_id: str | None = None, include_personal: bool = False):
+def cmd_export_config(
+    ctx,
+    path: str | None = None,
+    face_id: str | None = None,
+    include_personal: bool = False,
+):
     """Export the config in preset format ({parameters, control}), without personal keys."""
     mw = ctx.mw
     fid = face_id or _selected_face(mw)
@@ -1256,7 +1432,12 @@ def cmd_export_config(ctx, path: str | None = None, face_id: str | None = None, 
     out = _out_path(path, ".json") or (EXPORT_DIR / f"config-{_stamp()}.json")
     kept = _keep_previous(out)
     write_json_atomic(out, data)
-    res = {"path": str(out), "parameters": len(params), "control": len(control), "excluded": len(removed_c) + len(removed_p)}
+    res = {
+        "path": str(out),
+        "parameters": len(params),
+        "control": len(control),
+        "excluded": len(removed_c) + len(removed_p),
+    }
     if kept:
         res["previous_kept"] = kept
     return res
@@ -1270,7 +1451,9 @@ def cmd_export_config(ctx, path: str | None = None, face_id: str | None = None, 
 def _build_plans(ctx, path, config, faces, no_control, no_params, source_face, missing):
     mw = ctx.mw
     if (path is None) == (config is None):
-        raise CommandError("give either path (a .json file) or config (the JSON object itself)")
+        raise CommandError(
+            "give either path (a .json file) or config (the JSON object itself)"
+        )
     if missing not in ("keep", "default"):
         raise CommandError("missing must be 'keep' or 'default'")
     if config is not None:
@@ -1295,9 +1478,19 @@ def _build_plans(ctx, path, config, faces, no_control, no_params, source_face, m
         if imported.control is None:
             out["control"] = "not in file"
         else:
-            ctl_defaults = {k: e.default for k, e in ctx.schema.entries.items() if e.scope == "control"}
+            ctl_defaults = {
+                k: e.default
+                for k, e in ctx.schema.entries.items()
+                if e.scope == "control"
+            }
             control_plan = merge.plan_section(
-                imported.control, dict(mw.control), "control", ctx.schema, rules, ctl_defaults, missing
+                imported.control,
+                dict(mw.control),
+                "control",
+                ctx.schema,
+                rules,
+                ctl_defaults,
+                missing,
             )
             out["control"] = control_plan.to_dict()
     param_plans: dict = {}
@@ -1311,37 +1504,75 @@ def _build_plans(ctx, path, config, faces, no_control, no_params, source_face, m
             defaults = _defaults(mw)
             for fid in face_ids:
                 param_plans[fid] = merge.plan_section(
-                    imported.parameters, _face_params(mw, fid), "parameter", ctx.schema, rules, defaults, missing
+                    imported.parameters,
+                    _face_params(mw, fid),
+                    "parameter",
+                    ctx.schema,
+                    rules,
+                    defaults,
+                    missing,
                 )
             if with_cwp and not face_ids:
                 cwp_plan = merge.plan_section(
-                    imported.parameters, _face_params(mw, None), "parameter", ctx.schema, rules, defaults, missing
+                    imported.parameters,
+                    _face_params(mw, None),
+                    "parameter",
+                    ctx.schema,
+                    rules,
+                    defaults,
+                    missing,
                 )
             elif faces == "all":
                 cwp_plan = merge.plan_section(
-                    imported.parameters, _face_params(mw, None), "parameter", ctx.schema, rules, defaults, missing
+                    imported.parameters,
+                    _face_params(mw, None),
+                    "parameter",
+                    ctx.schema,
+                    rules,
+                    defaults,
+                    missing,
                 )
             out["parameters"] = {fid: pl.to_dict() for fid, pl in param_plans.items()}
             if cwp_plan is not None:
                 out["parameters"]["<no-face panel>"] = cwp_plan.to_dict()
             if not face_ids:
-                out["notes"].append("no target face: only the parameters panel (template for future faces) is affected")
+                out["notes"].append(
+                    "no target face: only the parameters panel (template for future faces) is affected"
+                )
     return out, control_plan, param_plans, face_ids, cwp_plan
 
 
 @command("diff")
-def cmd_diff(ctx, path: str | None = None, faces: str = "selected", no_control: bool = False, no_params: bool = False,
-             source_face: str | None = None, missing: str = "keep", config: dict | None = None):
+def cmd_diff(
+    ctx,
+    path: str | None = None,
+    faces: str = "selected",
+    no_control: bool = False,
+    no_params: bool = False,
+    source_face: str | None = None,
+    missing: str = "keep",
+    config: dict | None = None,
+):
     """What would change: changed / excluded (personal) / unknown (obsolete) / invalid / missing.
     path: a .json file, or config: the JSON object itself (same formats)."""
-    out, *_ = _build_plans(ctx, path, config, faces, no_control, no_params, source_face, missing)
+    out, *_ = _build_plans(
+        ctx, path, config, faces, no_control, no_params, source_face, missing
+    )
     return out
 
 
 @command("apply_config", write=True, timeout=120)
-def cmd_apply_config(ctx, path: str | None = None, faces: str = "selected", no_control: bool = False,
-                     no_params: bool = False, source_face: str | None = None, missing: str = "keep",
-                     dry_run: bool = False, config: dict | None = None):
+def cmd_apply_config(
+    ctx,
+    path: str | None = None,
+    faces: str = "selected",
+    no_control: bool = False,
+    no_params: bool = False,
+    source_face: str | None = None,
+    missing: str = "keep",
+    dry_run: bool = False,
+    config: dict | None = None,
+):
     """Import a preset/workspace without touching personal keys. Backup first in vmf_api/backups.
     path: a .json file, or config: the JSON object itself (same formats)."""
     mw = ctx.mw
@@ -1379,11 +1610,16 @@ def cmd_list_backups(ctx):
     """List backups (most recent first)."""
     if not BACKUP_DIR.is_dir():
         return []
-    files = [(p.stat().st_mtime, p.name) for p in BACKUP_DIR.glob("*.json") if p.is_file()]
+    files = [
+        (p.stat().st_mtime, p.name) for p in BACKUP_DIR.glob("*.json") if p.is_file()
+    ]
     return [n for _, n in sorted(files, reverse=True)]
 
 
-WORKSPACE_BACKUPS = ("-workspace-before-load.json", "-workspace-before-save.json")  # whole workspaces
+WORKSPACE_BACKUPS = (
+    "-workspace-before-load.json",
+    "-workspace-before-save.json",
+)  # whole workspaces
 
 
 def _backup_label(name: str) -> str:
@@ -1431,13 +1667,23 @@ def cmd_restore_backup(ctx, name: str | None = None):
     if not names:
         raise CommandError("no backup")
     # Default: the latest backup written by the API (time-stamped name), never a whole workspace.
-    configs = [n for n in names if re.match(r"\d{8}-\d{6}", n) and not n.endswith(WORKSPACE_BACKUPS)]
+    configs = [
+        n
+        for n in names
+        if re.match(r"\d{8}-\d{6}", n) and not n.endswith(WORKSPACE_BACKUPS)
+    ]
     found = _find_backup(names, name) if name else (configs or [None])[0]
     if found is None:
-        raise CommandError(f"backup not found: {name} (see list_backups)" if name else "no config backup")
+        raise CommandError(
+            f"backup not found: {name} (see list_backups)"
+            if name
+            else "no config backup"
+        )
     if found.endswith(WORKSPACE_BACKUPS):
-        raise CommandError(f"{found} is a whole workspace (kept by load_workspace / save_workspace), not a config backup: "
-                           f"load it with load_workspace {BACKUP_DIR / found}")
+        raise CommandError(
+            f"{found} is a whole workspace (kept by load_workspace / save_workspace), not a config backup: "
+            f"load it with load_workspace {BACKUP_DIR / found}"
+        )
     name = found
     p = BACKUP_DIR / name
     data = json.loads(p.read_text(encoding="utf-8"))
@@ -1446,9 +1692,17 @@ def cmd_restore_backup(ctx, name: str | None = None):
     skipped = _camera_on(control)  # privacy: never turned on by the API
     for k in skipped:
         del control[k]
-    changed_c = {k: v for k, v in control.items() if not schema_mod.values_equal(mw.control.get(k), v)}
+    changed_c = {
+        k: v
+        for k, v in control.items()
+        if not schema_mod.values_equal(mw.control.get(k), v)
+    }
     errors = _apply_control_updates(mw, changed_c) if changed_c else []
-    faces = {fid: v for fid, v in (data.get("faces") or {}).items() if fid in (mw.parameters or {})}
+    faces = {
+        fid: v
+        for fid, v in (data.get("faces") or {}).items()
+        if fid in (mw.parameters or {})
+    }
     from app.helpers.miscellaneous import ParametersDict
 
     shown_before = _shown_params(mw)
@@ -1460,7 +1714,12 @@ def cmd_restore_backup(ctx, name: str | None = None):
     errors += _apply_param_updates(mw, list(faces), {}, None)
     errors += _run_param_exec(mw, shown_before, _shown_params(mw))
     _refresh(mw)
-    res = {"restored": name, "control_changed": len(changed_c), "faces": list(faces), "backup_of_current": current_backup}
+    res = {
+        "restored": name,
+        "control_changed": len(changed_c),
+        "faces": list(faces),
+        "backup_of_current": current_backup,
+    }
     if skipped:
         res["skipped_camera_toggles"] = skipped
     if errors:
@@ -1478,15 +1737,23 @@ def _unmet(mw, deps: dict | None) -> list:
     """Conditions of a schema depends_on that the current values do not meet."""
     if not deps:
         return []
-    bad = [c for c in deps.get("all", []) if not schema_mod.values_equal(_current_value(mw, c["key"]), c["value"])]
+    bad = [
+        c
+        for c in deps.get("all", [])
+        if not schema_mod.values_equal(_current_value(mw, c["key"]), c["value"])
+    ]
     anyof = deps.get("any", [])
-    if anyof and not any(schema_mod.values_equal(_current_value(mw, c["key"]), c["value"]) for c in anyof):
+    if anyof and not any(
+        schema_mod.values_equal(_current_value(mw, c["key"]), c["value"]) for c in anyof
+    ):
         bad.append({"any_of": anyof})
     return bad
 
 
 @command("press_parameter_button", write=True, timeout=600)
-def cmd_press_parameter_button(ctx, key: str, label: str | None = None, confirm: str | None = None):
+def cmd_press_parameter_button(
+    ctx, key: str, label: str | None = None, confirm: str | None = None
+):
     """Click a button attached to a setting (schema "buttons", e.g. "Apply" under Face Re-Aging's
     Target Age), exactly like in the UI. Its conditions (depends_on) must be met. A reset button
     needs confirm=<code> (the first call returns the code) and writes a config backup first."""
@@ -1502,10 +1769,15 @@ def cmd_press_parameter_button(ctx, key: str, label: str | None = None, confirm:
         raise CommandError(f"{key} has no button '{want}': {', '.join(labels)}")
     unmet = _unmet(mw, e.depends_on)
     if unmet:
-        raise CommandError(f"{key}: conditions not met for its button: {json.dumps(unmet)}")
+        raise CommandError(
+            f"{key}: conditions not met for its button: {json.dumps(unmet)}"
+        )
     widget = (getattr(mw, "parameter_widgets", {}) or {}).get(key)
     button = None
-    for holder in (getattr(widget, "below_row_widget", None), getattr(widget, "row_widget", None)):
+    for holder in (
+        getattr(widget, "below_row_widget", None),
+        getattr(widget, "row_widget", None),
+    ):
         if holder is None:
             continue
         for b in holder.findChildren(QtWidgets.QPushButton):
@@ -1518,11 +1790,15 @@ def cmd_press_parameter_button(ctx, key: str, label: str | None = None, confirm:
         raise CommandError(f"button '{want}' of {key} not found in the UI")
     backup = None
     if _RESET_WORDS.search(want):
-        ask = _action_confirmation(f"{key}:{want}", want, confirm, "press_parameter_button")
+        ask = _action_confirmation(
+            f"{key}:{want}", want, confirm, "press_parameter_button"
+        )
         if ask is not None:
-            ask["warning"] = (f"'{want}' resets settings. A config backup is written first: restore_backup "
-                              f"brings them back. To confirm: call press_parameter_button again with "
-                              f'confirm="{ask["confirm"]}" (valid 5 min).')
+            ask["warning"] = (
+                f"'{want}' resets settings. A config backup is written first: restore_backup "
+                f"brings them back. To confirm: call press_parameter_button again with "
+                f'confirm="{ask["confirm"]}" (valid 5 min).'
+            )
             return ask
         backup = _write_backup(mw, "before-reset")
     button.click()
@@ -1549,9 +1825,17 @@ def _with_personal(ctx, key: str, res: dict) -> dict:
 
 def _same_folder(key: str, old, new) -> bool:
     """C:/out and C:\\out are the same folder (the CLI / MCP send absolute Windows paths)."""
-    if not (key.endswith("Folder") and isinstance(old, str) and isinstance(new, str) and old and new):
+    if not (
+        key.endswith("Folder")
+        and isinstance(old, str)
+        and isinstance(new, str)
+        and old
+        and new
+    ):
         return False
-    return os.path.normcase(os.path.normpath(old)) == os.path.normcase(os.path.normpath(new))
+    return os.path.normcase(os.path.normpath(old)) == os.path.normcase(
+        os.path.normpath(new)
+    )
 
 
 @command("set", write=True)
@@ -1564,16 +1848,33 @@ def cmd_set(ctx, key: str, value: Any, face_id: str | None = None):
         raise CommandError(msg)
     if coerced is True and _CAMERA_ON_KEYS.search(key) and key.endswith("Toggle"):
         # e.g. SendVirtCamFramesEnableToggle: its function starts the virtual camera (run_action refuses it too)
-        raise CommandError(f"{key} turns on a webcam / the virtual camera (privacy): reserved to the user")
+        raise CommandError(
+            f"{key} turns on a webcam / the virtual camera (privacy): reserved to the user"
+        )
     if key in mw.control and ctx.schema.scope_of(key) != "parameter":
         old = mw.control[key]
         if schema_mod.values_equal(old, coerced) or _same_folder(key, old, coerced):
             # Re-applying runs the key's function anyway (a provider switch clears the VRAM and turns the swap off).
-            return _with_personal(ctx, key, {"scope": "control", "key": key, "from": old, "to": coerced,
-                                             "unchanged": True})
+            return _with_personal(
+                ctx,
+                key,
+                {
+                    "scope": "control",
+                    "key": key,
+                    "from": old,
+                    "to": coerced,
+                    "unchanged": True,
+                },
+            )
         errors = _apply_control_updates(mw, {key: coerced})
         _refresh(mw)
-        res = {"scope": "control", "key": key, "from": old, "to": coerced, "ui_updated": not errors}
+        res = {
+            "scope": "control",
+            "key": key,
+            "from": old,
+            "to": coerced,
+            "ui_updated": not errors,
+        }
         if errors:
             res["errors"] = errors
         return _with_personal(ctx, key, res)
@@ -1583,19 +1884,38 @@ def cmd_set(ctx, key: str, value: Any, face_id: str | None = None):
             raise CommandError(f"unknown face '{face_id}'")
         old = _face_params(mw, fid).get(key)
         if schema_mod.values_equal(old, coerced):
-            return _with_personal(ctx, key, {"scope": "parameter", "face_id": fid, "key": key, "from": old,
-                                             "to": coerced, "unchanged": True})
+            return _with_personal(
+                ctx,
+                key,
+                {
+                    "scope": "parameter",
+                    "face_id": fid,
+                    "key": key,
+                    "from": old,
+                    "to": coerced,
+                    "unchanged": True,
+                },
+            )
         if fid:
             errors = _apply_param_updates(mw, [fid], {fid: {key: coerced}}, None)
         else:
             errors = _apply_param_updates(mw, [], {}, {key: coerced})
         _refresh(mw)
         shown = fid is None or fid == _selected_face(mw)
-        res = {"scope": "parameter", "face_id": fid, "key": key, "from": old, "to": coerced, "ui_updated": shown}
+        res = {
+            "scope": "parameter",
+            "face_id": fid,
+            "key": key,
+            "from": old,
+            "to": coerced,
+            "ui_updated": shown,
+        }
         if errors:
             res["errors"] = errors
         if not shown:
-            res["note"] = "stored for this face; the panel shows the selected face, so it is unchanged"
+            res["note"] = (
+                "stored for this face; the panel shows the selected face, so it is unchanged"
+            )
         return _with_personal(ctx, key, res)
     raise CommandError(f"key unknown to this version: {key}")
 
@@ -1604,7 +1924,12 @@ def _group_name(e) -> str:
     """Group of an entry; a layout without groups (Face Editor tab) is named after the layout."""
     if e.group:
         return e.group
-    return " ".join(w.capitalize() for w in e.layout.replace("_LAYOUT_DATA", "").split("_")) or "Other"
+    return (
+        " ".join(
+            w.capitalize() for w in e.layout.replace("_LAYOUT_DATA", "").split("_")
+        )
+        or "Other"
+    )
 
 
 def _schema_groups(schema) -> dict:
@@ -1613,18 +1938,24 @@ def _schema_groups(schema) -> dict:
     toggles is on."""
     groups: dict = {}
     for e in schema.entries.values():
-        g = groups.setdefault(_group_name(e), {"keys": 0, "scope": set(), "members": set()})
+        g = groups.setdefault(
+            _group_name(e), {"keys": 0, "scope": set(), "members": set()}
+        )
         g["keys"] += 1
         g["scope"].add(e.scope)
         g["members"].add(e.key)
     needed: set = set()
     for e in schema.entries.values():
-        for cond in (e.depends_on or {}).get("all", []) + (e.depends_on or {}).get("any", []):
+        for cond in (e.depends_on or {}).get("all", []) + (e.depends_on or {}).get(
+            "any", []
+        ):
             needed.add(cond["key"])
     out = {}
     for name, v in sorted(groups.items()):
         switches = sorted(
-            k for k in v["members"] & needed if schema.get(k).kind == "toggle" and not schema.get(k).depends_on
+            k
+            for k in v["members"] & needed
+            if schema.get(k).kind == "toggle" and not schema.get(k).depends_on
         )
         d = {"keys": v["keys"], "scope": "/".join(sorted(v["scope"]))}
         if switches:
@@ -1644,9 +1975,13 @@ def _schema_find(schema, text: str) -> tuple:
     words = [w for w in re.split(r"[\s_/]+", low) if w]
 
     def hay(k, e):
-        return " ".join(x for x in (k, e.label, e.group, getattr(e, "tab", None)) if x).lower()
+        return " ".join(
+            x for x in (k, e.label, e.group, getattr(e, "tab", None)) if x
+        ).lower()
 
-    matches = [k for k, e in schema.entries.items() if all(w in hay(k, e) for w in words)]
+    matches = [
+        k for k, e in schema.entries.items() if all(w in hay(k, e) for w in words)
+    ]
     names = {k.lower(): k for k in schema.entries}
     for k, e in schema.entries.items():
         if e.label:
@@ -1670,7 +2005,7 @@ def cmd_schema(ctx, key: str | None = None, group: str | None = None):
             "groups": _schema_groups(schema),
             "total_keys": len(schema.entries),
             "hint": 'schema(group="<name>") for a group\'s keys, schema(key="<part of a name>") to search, '
-                    'schema(group="*") for everything',
+            'schema(group="*") for everything',
         }
 
     def describe(k, e):
@@ -1692,7 +2027,9 @@ def cmd_schema(ctx, key: str | None = None, group: str | None = None):
     if group and group != "*":
         names = {g.lower(): g for g in _schema_groups(schema)}
         if group.lower() not in names:
-            raise CommandError(f"unknown group: {group}. Groups: {', '.join(sorted(names.values()))}")
+            raise CommandError(
+                f"unknown group: {group}. Groups: {', '.join(sorted(names.values()))}"
+            )
         group = names[group.lower()]
     keys = None
     note = None
@@ -1704,11 +2041,17 @@ def cmd_schema(ctx, key: str | None = None, group: str | None = None):
             keys = matches
             note = f"no key named exactly '{key}': {len(matches)} key(s) contain it"
         else:
-            hint = f"; did you mean: {', '.join(close)}" if close else '; schema() lists the groups'
+            hint = (
+                f"; did you mean: {', '.join(close)}"
+                if close
+                else "; schema() lists the groups"
+            )
             raise CommandError(f"unknown key: {key}{hint}")
     out = {}
     for k, e in schema.entries.items():
-        if (keys is not None and k not in keys) or (group and group != "*" and _group_name(e) != group):
+        if (keys is not None and k not in keys) or (
+            group and group != "*" and _group_name(e) != group
+        ):
             continue
         out[k] = describe(k, e)
     if note:
@@ -1729,7 +2072,13 @@ def _snapshot_out(path: str | None, save: bool) -> Path | None:
 
 
 @command("snapshot", timeout=30)
-def cmd_snapshot(ctx, path: str | None = None, view: bool = False, include_data: bool = True, save: bool = False):
+def cmd_snapshot(
+    ctx,
+    path: str | None = None,
+    view: bool = False,
+    include_data: bool = True,
+    save: bool = False,
+):
     """Preview PNG: processed frame at full resolution (view=true: the view as displayed).
     save=true without path: written in vmf_api\\snapshots."""
     from PySide6 import QtCore, QtWidgets
@@ -1744,7 +2093,10 @@ def cmd_snapshot(ctx, path: str | None = None, view: bool = False, include_data:
         scene = gv.scene()
         if scene is not None:
             for item in scene.items():
-                if isinstance(item, QtWidgets.QGraphicsPixmapItem) and not item.pixmap().isNull():
+                if (
+                    isinstance(item, QtWidgets.QGraphicsPixmapItem)
+                    and not item.pixmap().isNull()
+                ):
                     image = item.pixmap().toImage()
                     source = "frame"
                     break
@@ -1757,7 +2109,12 @@ def cmd_snapshot(ctx, path: str | None = None, view: bool = False, include_data:
     image.save(buf, "PNG")
     png = bytes(buf.data())
     buf.close()
-    res = {"source": source, "width": image.width(), "height": image.height(), "bytes": len(png)}
+    res = {
+        "source": source,
+        "width": image.width(),
+        "height": image.height(),
+        "bytes": len(png),
+    }
     out = _snapshot_out(path, save)
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -1832,7 +2189,9 @@ def _is_view_toggle(name: str) -> bool:
 def _embedding_reserved(name: str, label: str) -> bool:
     if _is_view_toggle(name):
         return False
-    return name in EMBEDDING_RESERVED or bool(_EMBEDDING_WORDS.search(name) or _EMBEDDING_WORDS.search(label))
+    return name in EMBEDDING_RESERVED or bool(
+        _EMBEDDING_WORDS.search(name) or _EMBEDDING_WORDS.search(label)
+    )
 
 
 _KV_WORDS = re.compile(r"kv_?map|kvmap|k/v", re.IGNORECASE)
@@ -1872,8 +2231,10 @@ BATCH_ACTIONS = {"batchallImageButton": True, "batchImageButton": False}
 # Blocked for another reason than a dialog.
 MANUAL_REASONS = {
     "actionSave_LastWorkspace": "overwrites the user's last_workspace.json without a backup: use save_workspace",
-    "actionReset_to_LastWorkspace": ("replaces the whole session with last_workspace.json without a backup: "
-                                     "use load_workspace (saves the current one first)"),
+    "actionReset_to_LastWorkspace": (
+        "replaces the whole session with last_workspace.json without a backup: "
+        "use load_workspace (saves the current one first)"
+    ),
 }
 # Native buttons with a safer API command.
 USE_INSTEAD = {
@@ -1887,11 +2248,17 @@ _DIALOG_WORDS = re.compile(
 # What a slot (or what it calls) opens, by priority: something outside VisoMaster,
 # a popup menu, a modal dialog.
 _MODAL_MARKERS = (
-    ("external", re.compile(r"QDesktopServices\.openUrl|webbrowser\.open|os\.startfile")),
+    (
+        "external",
+        re.compile(r"QDesktopServices\.openUrl|webbrowser\.open|os\.startfile"),
+    ),
     ("menu", re.compile(r"\bQMenu\(")),
-    ("dialog", re.compile(
-        r"QFileDialog|QMessageBox|QInputDialog|create_and_show_messagebox|\.exec_?\(|[A-Za-z]Dialog\("
-    )),
+    (
+        "dialog",
+        re.compile(
+            r"QFileDialog|QMessageBox|QInputDialog|create_and_show_messagebox|\.exec_?\(|[A-Za-z]Dialog\("
+        ),
+    ),
 )
 MODAL_REASONS = {
     "external": "opens an external document or web link outside VisoMaster",
@@ -2015,7 +2382,9 @@ def _dialog_info(mw, name, label) -> tuple:
 
 
 # Labels are free text: card buttons show file names, sizes and full paths.
-_PATHLIKE = re.compile(r"[A-Za-z]:[\\/]|\\\\|(?:^|\s)/\w+/|\.\w{2,4}\b.*\d+(?:\.\d+)?\s*[KMG]i?B", re.S)
+_PATHLIKE = re.compile(
+    r"[A-Za-z]:[\\/]|\\\\|(?:^|\s)/\w+/|\.\w{2,4}\b.*\d+(?:\.\d+)?\s*[KMG]i?B", re.S
+)
 
 
 def _safe_label(text: str) -> str:
@@ -2087,7 +2456,10 @@ NOT_DESTRUCTIVE = {
     "targetVideosSearchResetButton",  # clears the search box text
 }
 # Whole words only: "Presets" must not match "reset", nor "dropdown" match "drop".
-_DESTRUCTIVE_WORD = re.compile(r"(clear|drop|delete|remove|reset|purge|discard|erase|wipe)(s|d|ed|ped|all)?", re.IGNORECASE)
+_DESTRUCTIVE_WORD = re.compile(
+    r"(clear|drop|delete|remove|reset|purge|discard|erase|wipe)(s|d|ed|ped|all)?",
+    re.IGNORECASE,
+)
 _ACTION_CONFIRM: dict = {}  # code -> {"name", "expires"}
 
 
@@ -2109,7 +2481,9 @@ def _is_destructive(name: str, label: str) -> bool:
 _RESET_WORDS = re.compile(r"\b(reset|clear|delete|remove|erase)\b", re.IGNORECASE)
 
 
-def _action_confirmation(name: str, label: str, confirm: str | None, command_name: str = "run_action"):
+def _action_confirmation(
+    name: str, label: str, confirm: str | None, command_name: str = "run_action"
+):
     """None when confirmed; otherwise the warning to send back (with a new single-use code)."""
     import secrets
 
@@ -2151,7 +2525,11 @@ def _split_label(text: str) -> tuple:
 
 def _media_ok(mw) -> bool:
     vp = getattr(mw, "video_processor", None)
-    return bool(vp is not None and getattr(vp, "media_path", None) and getattr(vp, "file_type", None) in ("video", "image"))
+    return bool(
+        vp is not None
+        and getattr(vp, "media_path", None)
+        and getattr(vp, "file_type", None) in ("video", "image")
+    )
 
 
 def _describe(mw, name, obj) -> dict:
@@ -2196,7 +2574,9 @@ def _describe(mw, name, obj) -> dict:
         "requires": requires,
         "destructive": destructive,
         # opens_dialog: True / False / None (unknown); opens: what exactly (dialog / menu / external)
-        "opens_dialog": False if conditional and not policy_blocked else ((kind == "dialog") if kind else opens),
+        "opens_dialog": False
+        if conditional and not policy_blocked
+        else ((kind == "dialog") if kind else opens),
         "opens": kind,
         "detected_by": how,
         "needs_wrapper": policy_blocked,
@@ -2206,33 +2586,53 @@ def _describe(mw, name, obj) -> dict:
     if reserved:
         d["reason"] = _reserved_reason(name, label)
     elif privacy:
-        d["reason"] = "turns on webcams / virtual camera (privacy): reserved to the user"
+        d["reason"] = (
+            "turns on webcams / virtual camera (privacy): reserved to the user"
+        )
     elif name in MANUAL_REASONS:
         d["reason"] = MANUAL_REASONS[name]
     elif policy_blocked:
-        d["reason"] = MODAL_REASONS.get(kind, "opens a dialog") if opens else "probable dialog: blocked to be safe"
+        d["reason"] = (
+            MODAL_REASONS.get(kind, "opens a dialog")
+            if opens
+            else "probable dialog: blocked to be safe"
+        )
     elif not enabled:
-        d["reason"] = "disabled in VisoMaster right now (depends on the current media, scan or playback state)"
+        d["reason"] = (
+            "disabled in VisoMaster right now (depends on the current media, scan or playback state)"
+        )
     if slots:
         d["slots"] = slots
     use_instead = DIALOG_ACTIONS.get(name) or USE_INSTEAD.get(name)
     if use_instead:
         d["use_instead"] = use_instead
     if needs_face and not policy_blocked:
-        d["opens_dialog_when"] = "no target face is selected (run_action refuses that case)"
-        d["note"] = "shows a message box only when no face is selected, so it requires a selected face"
+        d["opens_dialog_when"] = (
+            "no target face is selected (run_action refuses that case)"
+        )
+        d["note"] = (
+            "shows a message box only when no face is selected, so it requires a selected face"
+        )
     if needs_media and not policy_blocked:
-        d["opens_dialog_when"] = "a webcam stream is starting (run_action refuses that case)"
-        d["note"] = ("shows a message box only while a webcam stream is starting, so it requires a "
-                     "video or image as the current media")
+        d["opens_dialog_when"] = (
+            "a webcam stream is starting (run_action refuses that case)"
+        )
+        d["note"] = (
+            "shows a message box only while a webcam stream is starting, so it requires a "
+            "video or image as the current media"
+        )
     if batch and not policy_blocked:
-        what = ("every image of the target list; finds ALL faces in each image and swaps them"
-                if BATCH_ACTIONS[name] else
-                "every image and video of the target list with the current target face settings")
-        d["note"] = (f"VisoMaster's own batch processing ({what}), output to OutputMediaFolder. run_action runs "
-                     "it without its dialogs (its confirmation is answered Yes, no progress window, the final "
-                     "summary is returned instead) and returns at once: then call wait_recording (progress, "
-                     "then processing_time_s, processed / failed). stop_recording cancels it.")
+        what = (
+            "every image of the target list; finds ALL faces in each image and swaps them"
+            if BATCH_ACTIONS[name]
+            else "every image and video of the target list with the current target face settings"
+        )
+        d["note"] = (
+            f"VisoMaster's own batch processing ({what}), output to OutputMediaFolder. run_action runs "
+            "it without its dialogs (its confirmation is answered Yes, no progress window, the final "
+            "summary is returned instead) and returns at once: then call wait_recording (progress, "
+            "then processing_time_s, processed / failed). stop_recording cancels it."
+        )
     return d
 
 
@@ -2249,8 +2649,12 @@ def cmd_list_actions(ctx, include_disabled: bool = True):
         "counts": {
             "total": len(actions),
             "allowed": len(allowed),
-            "allowed_with_confirmation": sum(1 for a in allowed if "confirmation" in a["requires"]),
-            "allowed_with_selected_face": sum(1 for a in allowed if "selected_face" in a["requires"]),
+            "allowed_with_confirmation": sum(
+                1 for a in allowed if "confirmation" in a["requires"]
+            ),
+            "allowed_with_selected_face": sum(
+                1 for a in allowed if "selected_face" in a["requires"]
+            ),
             "blocked": len(actions) - len(allowed),
             "blocked_by_policy": sum(1 for a in actions if a["needs_wrapper"]),
             "disabled": sum(1 for a in actions if not a["enabled"]),
@@ -2259,7 +2663,9 @@ def cmd_list_actions(ctx, include_disabled: bool = True):
     }
 
 
-@command("run_action", write=True, timeout=300)  # e.g. turning the swap on loads models synchronously
+@command(
+    "run_action", write=True, timeout=300
+)  # e.g. turning the swap on loads models synchronously
 def cmd_run_action(ctx, name: str, confirm: str | None = None):
     """Trigger an action/button that opens NO dialog. Destructive ones need a confirmation code
     (1st call = warning + code, 2nd call with confirm=<code>)."""
@@ -2285,7 +2691,9 @@ def cmd_run_action(ctx, name: str, confirm: str | None = None):
     if "selected_face" in d["requires"] and not _selected_face(mw):
         raise CommandError(f"{name} needs a selected target face")
     if "video_or_image_loaded" in d["requires"] and not _media_ok(mw):
-        raise CommandError(f"{name} needs a video or image as the current media (not a webcam)")
+        raise CommandError(
+            f"{name} needs a video or image as the current media (not a webcam)"
+        )
     if not obj.isEnabled():
         raise CommandError(f"{name} is disabled")
     if name in BATCH_ACTIONS:
@@ -2300,7 +2708,10 @@ def cmd_run_action(ctx, name: str, confirm: str | None = None):
         obj.trigger()
     else:
         obj.click()
-    res = {"triggered": name, "checked": bool(obj.isChecked()) if obj.isCheckable() else None}
+    res = {
+        "triggered": name,
+        "checked": bool(obj.isChecked()) if obj.isCheckable() else None,
+    }
     if backup:
         res["config_backup"] = backup
     return res
@@ -2316,15 +2727,25 @@ def cmd_run_action(ctx, name: str, confirm: str | None = None):
 _WS_ENTRY_KEYS = {
     "input_faces_data": {"media_path": str},
     "embeddings_data": {"embedding_store": dict},
-    "target_faces_data": {"cropped_face": list, "embedding_store": dict, "assigned_merged_embeddings": list,
-                          "assigned_input_faces": list, "assigned_input_embedding": dict},
+    "target_faces_data": {
+        "cropped_face": list,
+        "embedding_store": dict,
+        "assigned_merged_embeddings": list,
+        "assigned_input_faces": list,
+        "assigned_input_embedding": dict,
+    },
 }
 
 
 def _camera_on(control: dict) -> list:
     """Toggles of a control dict that would turn on a webcam / the virtual camera."""
-    return sorted(k for k, v in control.items()
-                  if k.endswith("Toggle") and _CAMERA_ON_KEYS.search(k) and v in (True, "True", "true", 1))
+    return sorted(
+        k
+        for k, v in control.items()
+        if k.endswith("Toggle")
+        and _CAMERA_ON_KEYS.search(k)
+        and v in (True, "True", "true", 1)
+    )
 
 
 def _workspace_shape_errors(data: dict) -> list:
@@ -2334,7 +2755,11 @@ def _workspace_shape_errors(data: dict) -> list:
         errors.append("target_medias_data is not a list")
     else:
         for i, m in enumerate(medias):
-            if not (isinstance(m, dict) and isinstance(m.get("media_path"), str) and "media_id" in m):
+            if not (
+                isinstance(m, dict)
+                and isinstance(m.get("media_path"), str)
+                and "media_id" in m
+            ):
                 errors.append(f"target_medias_data[{i}] needs media_path and media_id")
     for section, keys in _WS_ENTRY_KEYS.items():
         entries = data.get(section, {})
@@ -2347,11 +2772,17 @@ def _workspace_shape_errors(data: dict) -> list:
                 continue
             for k, kind in keys.items():
                 if not isinstance(entry.get(k), kind):
-                    errors.append(f"{section}[{eid}].{k} missing or not a {kind.__name__}")
+                    errors.append(
+                        f"{section}[{eid}].{k} missing or not a {kind.__name__}"
+                    )
             if "parameters" in entry and not isinstance(entry["parameters"], dict):
                 errors.append(f"{section}[{eid}].parameters is not an object")
-    for k, kind in (("job_marker_pairs", list), ("markers", dict), ("embedding_tabs_state", dict),
-                    ("window_state_data", dict)):
+    for k, kind in (
+        ("job_marker_pairs", list),
+        ("markers", dict),
+        ("embedding_tabs_state", dict),
+        ("window_state_data", dict),
+    ):
         if k in data and data[k] is not None and not isinstance(data[k], kind):
             errors.append(f"{k} is not a {kind.__name__}")
     return errors
@@ -2366,17 +2797,30 @@ def _foreign_kv_maps(path: Path) -> list:
     except (OSError, ValueError) as e:
         raise CommandError(f"not a readable workspace JSON: {e}") from None
     # VisoMaster clears the session before it notices a wrong file (then shows a blocking error box).
-    if not (isinstance(data, dict) and isinstance(data.get("control"), dict)
-            and any(k in data for k in ("target_medias_data", "input_faces_data", "target_faces_data"))):
-        raise CommandError("not a VisoMaster workspace (no control / target_medias_data...): "
-                           "for a config file use diff then apply_config")
+    if not (
+        isinstance(data, dict)
+        and isinstance(data.get("control"), dict)
+        and any(
+            k in data
+            for k in ("target_medias_data", "input_faces_data", "target_faces_data")
+        )
+    ):
+        raise CommandError(
+            "not a VisoMaster workspace (no control / target_medias_data...): "
+            "for a config file use diff then apply_config"
+        )
     cams = _camera_on(data["control"])
     if cams:
-        raise CommandError(f"refused: this workspace turns on a webcam / the virtual camera ({', '.join(cams)}): "
-                           "privacy, reserved to the user (load it yourself in VisoMaster, or turn it off in the file)")
+        raise CommandError(
+            f"refused: this workspace turns on a webcam / the virtual camera ({', '.join(cams)}): "
+            "privacy, reserved to the user (load it yourself in VisoMaster, or turn it off in the file)"
+        )
     bad = _workspace_shape_errors(data)
     if bad:
-        raise CommandError("damaged workspace, VisoMaster would clear the session then fail: " + "; ".join(bad[:5]))
+        raise CommandError(
+            "damaged workspace, VisoMaster would clear the session then fail: "
+            + "; ".join(bad[:5])
+        )
     found, stack = [], [data]
     while stack:
         node = stack.pop()
@@ -2436,7 +2880,9 @@ def _save_workspace_file(mw, p: Path, previous: str | None = None) -> None:
     t0 = time.time()
     save_load_actions.save_current_workspace(mw, str(p))
     try:
-        ok = p.stat().st_mtime >= t0 - 2 and isinstance(json.loads(p.read_text(encoding="utf-8")).get("control"), dict)
+        ok = p.stat().st_mtime >= t0 - 2 and isinstance(
+            json.loads(p.read_text(encoding="utf-8")).get("control"), dict
+        )
     except (OSError, ValueError, AttributeError):
         ok = False
     if not ok:
@@ -2447,8 +2893,10 @@ def _save_workspace_file(mw, p: Path, previous: str | None = None) -> None:
                 restored = " (its previous content was put back)"
             except OSError:
                 restored = f" (its previous content is in {previous})"
-        raise CommandError(f"VisoMaster could not write a complete workspace to {p}{restored}: "
-                           "see its console")
+        raise CommandError(
+            f"VisoMaster could not write a complete workspace to {p}{restored}: "
+            "see its console"
+        )
 
 
 @command("load_workspace", write=True, timeout=600)
@@ -2465,16 +2913,25 @@ def cmd_load_workspace(ctx, path: str):
         raise CommandError(
             f"refused: this workspace makes VisoMaster load K/V map files from outside its own folder "
             f"({outside[:3]}). VisoMaster loads them with torch.load(weights_only=False), which can run code "
-            f"hidden in the file. If you trust it, open it yourself in VisoMaster (File > Load Workspace)")
+            f"hidden in the file. If you trust it, open it yourself in VisoMaster (File > Load Workspace)"
+        )
     backup = _backup_path(WORKSPACE_BACKUPS[0][1:-5])
     try:
         _save_workspace_file(mw, backup)
     except CommandError as e:
-        raise CommandError(f"the current workspace could not be backed up: {e}. Nothing loaded, "
-                           "the session is unchanged") from None
-    _prune(BACKUP_DIR, "*" + WORKSPACE_BACKUPS[0], 10)  # whole workspaces (~MBs, face data): the 10 latest
+        raise CommandError(
+            f"the current workspace could not be backed up: {e}. Nothing loaded, "
+            "the session is unchanged"
+        ) from None
+    _prune(
+        BACKUP_DIR, "*" + WORKSPACE_BACKUPS[0], 10
+    )  # whole workspaces (~MBs, face data): the 10 latest
     save_load_actions.load_saved_workspace(mw, str(p))
-    return {"loaded": str(p), "workspace_backup": str(backup), "target_faces": list(mw.target_faces)}
+    return {
+        "loaded": str(p),
+        "workspace_backup": str(backup),
+        "target_faces": list(mw.target_faces),
+    }
 
 
 @command("save_workspace", write=True, timeout=300)
@@ -2501,12 +2958,23 @@ def cmd_save_workspace(ctx, path: str | None = None):
 
 # Window place and size in a workspace file (window_state_data). A hidden VisoMaster (Qt offscreen) has no
 # real place on screen: saving its own would open the next normal start off screen or resized.
-_WINDOW_KEYS = ("x", "y", "width", "height", "isMaximized", "isFullScreen", "dock_state")
+_WINDOW_KEYS = (
+    "x",
+    "y",
+    "width",
+    "height",
+    "isMaximized",
+    "isFullScreen",
+    "dock_state",
+)
 
 
 def _window_state(path) -> dict | None:
     try:
-        ws = json.loads(Path(path).read_text(encoding="utf-8")).get("window_state_data") or {}
+        ws = (
+            json.loads(Path(path).read_text(encoding="utf-8")).get("window_state_data")
+            or {}
+        )
     except (OSError, ValueError, TypeError, AttributeError):
         return None
     keep = {k: ws[k] for k in _WINDOW_KEYS if k in ws}
@@ -2517,14 +2985,18 @@ def _wrap_workspace_save(fn):
     def save_current_workspace(main_window, data_filename=False):
         keep = None
         if data_filename:
-            keep = _window_state(data_filename) or _window_state(getattr(main_window, "last_workspace_path", ""))
+            keep = _window_state(data_filename) or _window_state(
+                getattr(main_window, "last_workspace_path", "")
+            )
         res = fn(main_window, data_filename)
         if keep:
             try:
                 p = Path(data_filename)
                 data = json.loads(p.read_text(encoding="utf-8"))
                 data.setdefault("window_state_data", {}).update(keep)
-                write_json_atomic(p, data, indent=4)  # same layout as VisoMaster's own save
+                write_json_atomic(
+                    p, data, indent=4
+                )  # same layout as VisoMaster's own save
             except (OSError, ValueError, TypeError, AttributeError) as e:
                 log(f"window place not kept in {data_filename}: {e}")
         return res
@@ -2580,11 +3052,19 @@ def cmd_load_target_media(ctx, path):
     mw = ctx.mw
     folder, files = _split_paths(path)
     shown = folder or os.path.dirname(files[0])
-    list_view_actions.select_target_medias(mw, source_type="api", folder_name=folder or False, files_list=files)
+    list_view_actions.select_target_medias(
+        mw, source_type="api", folder_name=folder or False, files_list=files
+    )
     mw.targetVideosPathLineEdit.setText(shown)
     mw.targetVideosPathLineEdit.setToolTip(shown)
     mw.last_target_media_folder_path = shown
-    return {"folder": folder, "files": files, "note": "asynchronous loading (thumbnails in progress): " + WAIT_THEN + "use them"}
+    return {
+        "folder": folder,
+        "files": files,
+        "note": "asynchronous loading (thumbnails in progress): "
+        + WAIT_THEN
+        + "use them",
+    }
 
 
 @command("load_input_faces", write=True, timeout=120)
@@ -2595,15 +3075,25 @@ def cmd_load_input_faces(ctx, path):
     mw = ctx.mw
     folder, files = _split_paths(path)
     shown = folder or os.path.dirname(files[0])
-    list_view_actions.select_input_face_images(mw, source_type="api", folder_name=folder or False, files_list=files)
+    list_view_actions.select_input_face_images(
+        mw, source_type="api", folder_name=folder or False, files_list=files
+    )
     mw.inputFacesPathLineEdit.setText(shown)
     mw.inputFacesPathLineEdit.setToolTip(shown)
     mw.last_input_media_folder_path = shown
-    return {"folder": folder, "files": files, "note": "asynchronous loading (thumbnails in progress): " + WAIT_THEN + "use them"}
+    return {
+        "folder": folder,
+        "files": files,
+        "note": "asynchronous loading (thumbnails in progress): "
+        + WAIT_THEN
+        + "use them",
+    }
 
 
 def _card_name(button) -> str:
-    path = getattr(button, "media_path", None) or getattr(button, "file_path", None) or ""
+    path = (
+        getattr(button, "media_path", None) or getattr(button, "file_path", None) or ""
+    )
     return os.path.basename(str(path)) if path else ""
 
 
@@ -2612,7 +3102,10 @@ def cmd_select_target_media(ctx, name: str | None = None):
     """Select a loaded target media (file name, media_id or index); no name: list them."""
     mw = ctx.mw
     cards = list((getattr(mw, "target_videos", {}) or {}).items())
-    listing = [{"index": i, "media_id": mid, "name": _card_name(b)} for i, (mid, b) in enumerate(cards)]
+    listing = [
+        {"index": i, "media_id": mid, "name": _card_name(b)}
+        for i, (mid, b) in enumerate(cards)
+    ]
     if name is None:
         return listing
     match = None
@@ -2623,7 +3116,9 @@ def cmd_select_target_media(ctx, name: str | None = None):
     if match is None:
         raise CommandError(f"media '{name}' not found; loaded: {listing}")
     if getattr(match, "file_type", None) == "webcam":
-        raise CommandError(f"{_card_name(match) or name} is a webcam: turning it on is reserved to the user (privacy)")
+        raise CommandError(
+            f"{_card_name(match) or name} is a webcam: turning it on is reserved to the user (privacy)"
+        )
     match.click()
     vp = mw.video_processor
     return {"selected": _card_name(match), "type": getattr(vp, "file_type", None)}
@@ -2633,13 +3128,24 @@ def _input_face_listing(mw) -> list:
     targets = getattr(mw, "target_faces", {}) or {}
     out = []
     for iid, b in (getattr(mw, "input_faces", {}) or {}).items():
-        out.append({"id": iid, "name": _card_name(b),
-                    "assigned_to": [t for t, tb in targets.items() if iid in (getattr(tb, "assigned_input_faces", {}) or {})]})
+        out.append(
+            {
+                "id": iid,
+                "name": _card_name(b),
+                "assigned_to": [
+                    t
+                    for t, tb in targets.items()
+                    if iid in (getattr(tb, "assigned_input_faces", {}) or {})
+                ],
+            }
+        )
     return out
 
 
 @command("select_input_face", write=True)
-def cmd_select_input_face(ctx, name: str | None = None, face_id: str | None = None, selected: bool = True):
+def cmd_select_input_face(
+    ctx, name: str | None = None, face_id: str | None = None, selected: bool = True
+):
     """Assign a loaded input face (file name or id) to a target face, like a click on its card in
     VisoMaster: it becomes the face's only input face (selected embeddings stay). selected=false:
     remove it. No name: list the input faces and the target faces they are assigned to."""
@@ -2651,7 +3157,9 @@ def cmd_select_input_face(ctx, name: str | None = None, face_id: str | None = No
     if btn is None:
         matches = [(i, b) for i, b in inputs.items() if _card_name(b) == name]
         if len(matches) > 1:
-            raise CommandError(f"several input faces are named '{name}': give the id {[m[0] for m in matches]}")
+            raise CommandError(
+                f"several input faces are named '{name}': give the id {[m[0] for m in matches]}"
+            )
         if not matches:
             raise CommandError(
                 f"input face '{name}' not found ({len(inputs)} loaded; load_input_faces is asynchronous: "
@@ -2671,15 +3179,28 @@ def cmd_select_input_face(ctx, name: str | None = None, face_id: str | None = No
     if getattr(mw, "cur_selected_target_face_button", None) is not faces[fid]:
         raise CommandError(f"could not select face '{fid}'")
     current = list((faces[fid].assigned_input_faces or {}).keys())
-    if (selected and current == [iid] and btn.isChecked()) or (not selected and iid not in current):
-        return {"face_id": fid, "input_face": iid, "assigned": current, "changed": False}
+    if (selected and current == [iid] and btn.isChecked()) or (
+        not selected and iid not in current
+    ):
+        return {
+            "face_id": fid,
+            "input_face": iid,
+            "assigned": current,
+            "changed": False,
+        }
     # Native path (InputFaceCardButton.load_input_face): click toggles the check state, then assigns
     # exclusively (checked) or removes (unchecked).
     btn.setChecked(not selected)
     btn.click()
     after = list((faces[fid].assigned_input_faces or {}).keys())
-    return {"face_id": fid, "input_face": iid, "name": _card_name(btn), "assigned": after,
-            "changed": after != current, "face_reselected": reselected}
+    return {
+        "face_id": fid,
+        "input_face": iid,
+        "name": _card_name(btn),
+        "assigned": after,
+        "changed": after != current,
+        "face_reselected": reselected,
+    }
 
 
 @command("select_target_face", write=True)
@@ -2718,12 +3239,12 @@ def _embedding_tabs(mw) -> dict:
             label = tabs.tabText(i) if tabs is not None and i < tabs.count() else str(i)
         except Exception:
             label = str(i)
-        for eid in (state.get("embeddings") or {}):
+        for eid in state.get("embeddings") or {}:
             out[eid] = label
     if tabs is not None:
         try:
             current = tabs.tabText(tabs.currentIndex())
-            for eid in (getattr(mw, "merged_embeddings", {}) or {}):
+            for eid in getattr(mw, "merged_embeddings", {}) or {}:
                 out.setdefault(eid, current)
         except Exception:
             pass
@@ -2746,30 +3267,47 @@ def cmd_list_embeddings(ctx):
     assigned = _assignments(mw)
     items = []
     for eid, btn in _all_embeddings(mw).items():
-        items.append({
-            "id": eid,
-            "name": getattr(btn, "embedding_name", None) or btn.text(),
-            "tab": tabs.get(eid),
-            "has_kv_map": bool(getattr(btn, "kv_map", None) or getattr(btn, "kv_map_list", None)),
-            "assigned_to": [fid for fid, ids in assigned.items() if eid in ids],
-        })
-    return {"embeddings": items, "selected_target_face_id": _selected_face(mw), "assignments": assigned}
+        items.append(
+            {
+                "id": eid,
+                "name": getattr(btn, "embedding_name", None) or btn.text(),
+                "tab": tabs.get(eid),
+                "has_kv_map": bool(
+                    getattr(btn, "kv_map", None) or getattr(btn, "kv_map_list", None)
+                ),
+                "assigned_to": [fid for fid, ids in assigned.items() if eid in ids],
+            }
+        )
+    return {
+        "embeddings": items,
+        "selected_target_face_id": _selected_face(mw),
+        "assignments": assigned,
+    }
 
 
 @command("select_embedding", write=True)
-def cmd_select_embedding(ctx, embedding: str, face_id: str | None = None, selected: bool = True):
+def cmd_select_embedding(
+    ctx, embedding: str, face_id: str | None = None, selected: bool = True
+):
     """Select an embedding (id or exact name) for a target face's swap, like a click in
     VisoMaster: it becomes the face's only merged embedding. selected=false: remove it."""
     mw = ctx.mw
     all_embeds = _all_embeddings(mw)
     btn = all_embeds.get(embedding)
     if btn is None:
-        matches = [(eid, b) for eid, b in all_embeds.items()
-                   if (getattr(b, "embedding_name", None) or b.text()) == embedding]
+        matches = [
+            (eid, b)
+            for eid, b in all_embeds.items()
+            if (getattr(b, "embedding_name", None) or b.text()) == embedding
+        ]
         if len(matches) > 1:
-            raise CommandError(f"several embeddings are named '{embedding}': give the id {[m[0] for m in matches]}")
+            raise CommandError(
+                f"several embeddings are named '{embedding}': give the id {[m[0] for m in matches]}"
+            )
         if not matches:
-            raise CommandError(f"embedding '{embedding}' not found (see list_embeddings)")
+            raise CommandError(
+                f"embedding '{embedding}' not found (see list_embeddings)"
+            )
         embedding, btn = matches[0]
     faces = getattr(mw, "target_faces", {}) or {}
     fid = face_id or _selected_face(mw)
@@ -2787,16 +3325,31 @@ def cmd_select_embedding(ctx, embedding: str, face_id: str | None = None, select
         raise CommandError("this embedding is disabled in the UI")
     current = list((faces[fid].assigned_merged_embeddings or {}).keys())
     if selected and current == [embedding] and btn.isChecked():
-        return {"face_id": fid, "embedding": embedding, "assigned": current, "changed": False}
+        return {
+            "face_id": fid,
+            "embedding": embedding,
+            "assigned": current,
+            "changed": False,
+        }
     if not selected and embedding not in current:
-        return {"face_id": fid, "embedding": embedding, "assigned": current, "changed": False}
+        return {
+            "face_id": fid,
+            "embedding": embedding,
+            "assigned": current,
+            "changed": False,
+        }
     # Native path (EmbeddingCardButton.load_embedding): click toggles the
     # check state, then assigns exclusively (selected) or removes (unselected).
     btn.setChecked(not selected)
     btn.click()
     after = list((faces[fid].assigned_merged_embeddings or {}).keys())
-    return {"face_id": fid, "embedding": embedding, "assigned": after, "changed": after != current,
-            "face_reselected": reselected}
+    return {
+        "face_id": fid,
+        "embedding": embedding,
+        "assigned": after,
+        "changed": after != current,
+        "face_reselected": reselected,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2847,7 +3400,11 @@ def _cache_state(mp, name: str) -> str | None:
     try:
         # load_model checks the cache with the shape-inferred sidecar when one exists
         # (_ensure_trt_ready_onnx); mirror that without creating it.
-        sidecar = path[: -len(".onnx")] + ".trtshape.onnx" if path.lower().endswith(".onnx") else path
+        sidecar = (
+            path[: -len(".onnx")] + ".trtshape.onnx"
+            if path.lower().endswith(".onnx")
+            else path
+        )
         probe_path = sidecar if os.path.exists(sidecar) else path
         return mp._check_tensorrt_cache_state(name, probe_path)
     except Exception:
@@ -2876,7 +3433,11 @@ def _engine_label(mp, name: str, path: str, state: str | None) -> str:
 def _toggled_models() -> set:
     """Models switched on/off by a UI option (others are 'core': swappers, detectors, ArcFace...)."""
     restorers, compounds, _ = _model_tables()
-    names = set(restorers.values()) | set(compounds) | {s for subs in compounds.values() for s in subs}
+    names = (
+        set(restorers.values())
+        | set(compounds)
+        | {s for subs in compounds.values() for s in subs}
+    )
     try:
         from app.ui.widgets.models_toggle_data import MODELS_TOGGLE_MAP
 
@@ -2906,7 +3467,8 @@ def _model_row(mp, name: str, toggled: set | None = None) -> dict:
         "downloaded": bool(path) and os.path.isfile(path),
         "tensorrt_capable": onnx,
         "engine": _engine_label(mp, name, path, state) if onnx else None,
-        "lazy_build_pending": name in (getattr(mp, "models_pending_build", set()) or set()),
+        "lazy_build_pending": name
+        in (getattr(mp, "models_pending_build", set()) or set()),
         "loaded": (mp.models or {}).get(name) is not None,
         "core": core,
         "active_in_settings": active,
@@ -2916,7 +3478,9 @@ def _model_row(mp, name: str, toggled: set | None = None) -> dict:
 
 def _engines_dir_size() -> int:
     d = APP_DIR / "tensorrt-engines"
-    return sum(f.stat().st_size for f in d.rglob("*") if f.is_file()) if d.is_dir() else 0
+    return (
+        sum(f.stat().st_size for f in d.rglob("*") if f.is_file()) if d.is_dir() else 0
+    )
 
 
 @command("list_tensorrt_models")
@@ -2929,7 +3493,11 @@ def cmd_list_tensorrt_models(ctx, only: str | None = None):
     if only == "missing":
         rows = [r for r in rows if r["engine"] == "absent" and r["downloaded"]]
     elif only == "built":
-        rows = [r for r in rows if str(r["engine"]).startswith("built") and r["engine"] != LAZY_LABEL]
+        rows = [
+            r
+            for r in rows
+            if str(r["engine"]).startswith("built") and r["engine"] != LAZY_LABEL
+        ]
     elif only == "active":
         rows = [r for r in rows if r["active_in_settings"] or r["loaded"]]
     elif only == "loaded":
@@ -3057,7 +3625,10 @@ def _load_with_capture(mp, name, item):
             pass
     ident = threading.get_ident()
     out, err = sys.stdout, sys.stderr
-    sys.stdout, sys.stderr = _ThreadTee(out, ident, on_line), _ThreadTee(err, ident, on_line)
+    sys.stdout, sys.stderr = (
+        _ThreadTee(out, ident, on_line),
+        _ThreadTee(err, ident, on_line),
+    )
     try:
         return mp.load_model(name)
     finally:
@@ -3075,8 +3646,10 @@ def _load_with_capture(mp, name, item):
 
 def _failure_reason(item) -> str:
     if item.get("timeouts"):
-        return (f"TensorRT compilation timeout ({item['timeouts']} x {PROBE_TIMEOUT_S // 60} min, "
-                f"limit set by VisoMaster)")
+        return (
+            f"TensorRT compilation timeout ({item['timeouts']} x {PROBE_TIMEOUT_S // 60} min, "
+            f"limit set by VisoMaster)"
+        )
     if item.get("exit_codes"):
         return f"compilation failed (exit codes {item['exit_codes']})"
     for line in reversed(item.get("log_tail") or []):
@@ -3094,9 +3667,15 @@ def _trt_worker(mw, job):
                 item.update(status="skipped", reason="cancelled")
                 continue
             job["current"] = name
-            item.update(status="running", started_ts=time.time(), started=time.strftime("%Y-%m-%dT%H:%M:%S"))
+            item.update(
+                status="running",
+                started_ts=time.time(),
+                started=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            )
             atoms = _atomic_models(name)
-            if not item["rebuild"] and all(_cache_state(mp, a) is not None for a in atoms):
+            if not item["rebuild"] and all(
+                _cache_state(mp, a) is not None for a in atoms
+            ):
                 item.update(status="skipped", reason="engine already built")
                 continue
             was_loaded = {a: (mp.models or {}).get(a) is not None for a in atoms}
@@ -3105,7 +3684,9 @@ def _trt_worker(mw, job):
                     for a in atoms:
                         _force_unload(mp, a)
                         _delete_engine(mp, a)
-                session = _load_with_capture(mp, name, item)  # = first activation with TensorRT
+                session = _load_with_capture(
+                    mp, name, item
+                )  # = first activation with TensorRT
             except Exception as e:
                 session = None
                 item["error"] = f"{type(e).__name__}: {e}"
@@ -3115,7 +3696,7 @@ def _trt_worker(mw, job):
                     status="failed",
                     error=item.get("error") or _failure_reason(item),
                     after_failure="no engine: VisoMaster cleaned the cache, the model will be recompiled on its "
-                    "next use; retry with models=\"failed\"",
+                    'next use; retry with models="failed"',
                 )
                 for a in atoms:  # nothing half-loaded left behind
                     if not was_loaded[a]:
@@ -3129,8 +3710,11 @@ def _trt_worker(mw, job):
             if lazy:
                 # Dynamic input shape: the probe succeeded but TensorRT only compiles the
                 # engine at the first real inference (VisoMaster's "lazy build").
-                item.update(status="lazy", lazy=lazy,
-                            note="dynamic input shape: VisoMaster compiles the engine on first real use")
+                item.update(
+                    status="lazy",
+                    lazy=lazy,
+                    note="dynamic input shape: VisoMaster compiles the engine on first real use",
+                )
             else:
                 item["status"] = "built"
             # Leave memory as it was before the build.
@@ -3147,7 +3731,9 @@ def _trt_worker(mw, job):
 
 
 @command("build_tensorrt_cache", write=True)
-def cmd_build_tensorrt_cache(ctx, models: Any = "active", rebuild: bool = False, confirm: str | None = None):
+def cmd_build_tensorrt_cache(
+    ctx, models: Any = "active", rebuild: bool = False, confirm: str | None = None
+):
     """Build TensorRT engines (same action as a model's first activation).
     models: list of names | "active" (loaded + optional models enabled in the settings; core models
     - swappers, detectors, ArcFace - must be named) | "all" (every downloaded model) | "failed".
@@ -3171,11 +3757,17 @@ def cmd_build_tensorrt_cache(ctx, models: Any = "active", rebuild: bool = False,
     listing = cmd_list_tensorrt_models(ctx)["models"]
     by_name = {r["model"]: r for r in listing}
     if models in (None, "active"):
-        selection = [r["model"] for r in listing if r["active_in_settings"] or r["loaded"]]
+        selection = [
+            r["model"] for r in listing if r["active_in_settings"] or r["loaded"]
+        ]
     elif models in ("all", "missing"):
         selection = [r["model"] for r in listing if r["downloaded"]]
     elif models == "failed":
-        selection = [i["model"] for i in (_TRT_JOB or {}).get("items", []) if i["status"] == "failed"]
+        selection = [
+            i["model"]
+            for i in (_TRT_JOB or {}).get("items", [])
+            if i["status"] == "failed"
+        ]
         if not selection:
             return {"started": False, "message": "no failure in the last build"}
     elif isinstance(models, list) and models:
@@ -3188,15 +3780,32 @@ def cmd_build_tensorrt_cache(ctx, models: Any = "active", rebuild: bool = False,
     else:
         raise CommandError('models: list of names, "active", "all" or "failed"')
     # Models VisoMaster knows (e.g. added by an update) but whose file is not downloaded: cannot be built.
-    not_downloaded = [r["model"] for r in listing if not r["downloaded"]] if models in ("all", "missing") else []
-    nd_note = {"not_downloaded": not_downloaded,
-               "not_downloaded_note": "known to VisoMaster but not downloaded yet: not built "
-                                      "(VisoMaster downloads models with its launcher / on first use)"} if not_downloaded else {}
+    not_downloaded = (
+        [r["model"] for r in listing if not r["downloaded"]]
+        if models in ("all", "missing")
+        else []
+    )
+    nd_note = (
+        {
+            "not_downloaded": not_downloaded,
+            "not_downloaded_note": "known to VisoMaster but not downloaded yet: not built "
+            "(VisoMaster downloads models with its launcher / on first use)",
+        }
+        if not_downloaded
+        else {}
+    )
     missing_files = sorted(
-        {a for m in selection for a in _atomic_models(m) if a in by_name and not by_name[a]["downloaded"]}
+        {
+            a
+            for m in selection
+            for a in _atomic_models(m)
+            if a in by_name and not by_name[a]["downloaded"]
+        }
     )
     if missing_files:
-        raise CommandError(f"model files missing: {missing_files} (Check / Update Models in the launcher)")
+        raise CommandError(
+            f"model files missing: {missing_files} (Check / Update Models in the launcher)"
+        )
 
     def built(m):
         return all(_cache_state(mp, a) is not None for a in _atomic_models(m))
@@ -3206,7 +3815,8 @@ def cmd_build_tensorrt_cache(ctx, models: Any = "active", rebuild: bool = False,
         # inference. Probing it again would only cost time and give the same answer.
         missing = [a for a in _atomic_models(m) if _cache_state(mp, a) is None]
         return bool(missing) and all(
-            _engine_label(mp, a, (mp.models_path or {}).get(a, ""), None) == LAZY_LABEL for a in missing
+            _engine_label(mp, a, (mp.models_path or {}).get(a, ""), None) == LAZY_LABEL
+            for a in missing
         )
 
     already = [m for m in selection if built(m)]
@@ -3239,7 +3849,10 @@ def cmd_build_tensorrt_cache(ctx, models: Any = "active", rebuild: bool = False,
                 "started": False,
                 "confirmation_required": True,
                 "warning": _REBUILD_WARNING.format(
-                    n=len(queue), models=", ".join(queue), existing=", ".join(already) or "none", code=code
+                    n=len(queue),
+                    models=", ".join(queue),
+                    existing=", ".join(already) or "none",
+                    code=code,
                 ),
                 "models": queue,
                 "existing_engines": already,
@@ -3250,11 +3863,15 @@ def cmd_build_tensorrt_cache(ctx, models: Any = "active", rebuild: bool = False,
         "running": True,
         "cancel": False,
         "current": None,
-        "items": [{"model": m, "status": "pending", "rebuild": bool(rebuild)} for m in queue],
+        "items": [
+            {"model": m, "status": "pending", "rebuild": bool(rebuild)} for m in queue
+        ],
         "started": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "finished": None,
     }
-    threading.Thread(target=_trt_worker, args=(mw, _TRT_JOB), name="vmf-trt-build", daemon=True).start()
+    threading.Thread(
+        target=_trt_worker, args=(mw, _TRT_JOB), name="vmf-trt-build", daemon=True
+    ).start()
     return {
         "started": True,
         "rebuild": bool(rebuild),
@@ -3263,8 +3880,11 @@ def cmd_build_tensorrt_cache(ctx, models: Any = "active", rebuild: bool = False,
         "lazy_known": lazy_known,
         "note": "several minutes per model; VisoMaster shows its progress dialog; "
         "follow with tensorrt_build_status or wait_tensorrt_build"
-        + ("; lazy_known: dynamic input shape, not pre-buildable, VisoMaster compiles them on first real use"
-           if lazy_known else ""),
+        + (
+            "; lazy_known: dynamic input shape, not pre-buildable, VisoMaster compiles them on first real use"
+            if lazy_known
+            else ""
+        ),
         **nd_note,
     }
 
@@ -3274,7 +3894,10 @@ def cmd_tensorrt_build_status(ctx, detail: bool = False):
     """Progress of build_tensorrt_cache. Compact by default: counts, current model, running and failed
     items (with their log tail) and the final summary; detail=true lists every model."""
     if _TRT_JOB is None:
-        return {"running": False, "message": "no build started since VisoMaster started"}
+        return {
+            "running": False,
+            "message": "no build started since VisoMaster started",
+        }
     now = time.time()
     items = []
     for it in list(_TRT_JOB["items"]):  # mutated by the build thread: copy
@@ -3285,8 +3908,10 @@ def cmd_tensorrt_build_status(ctx, detail: bool = False):
             it["elapsed_s"] = round(now - ts, 1)
             # VisoMaster gives up after PROBE_ATTEMPTS x PROBE_TIMEOUT_S; beyond that something hangs.
             if it["elapsed_s"] > PROBE_ATTEMPTS * PROBE_TIMEOUT_S + 300:
-                it["warning"] = ("abnormally long: beyond VisoMaster's own limit; check the console, "
-                                 "restart VisoMaster if nothing moves")
+                it["warning"] = (
+                    "abnormally long: beyond VisoMaster's own limit; check the console, "
+                    "restart VisoMaster if nothing moves"
+                )
         items.append(it)
     counts = {
         s: sum(1 for i in items if i["status"] == s)
@@ -3301,10 +3926,14 @@ def cmd_tensorrt_build_status(ctx, detail: bool = False):
         "cancel_requested": _TRT_JOB["cancel"],
         "started": _TRT_JOB["started"],
         "finished": _TRT_JOB["finished"],
-        "items": items if detail else [i for i in items if i["status"] in ("running", "failed")],
+        "items": items
+        if detail
+        else [i for i in items if i["status"] in ("running", "failed")],
     }
     if not detail:
-        res["items_note"] = "running and failed models only: detail=true lists every model"
+        res["items_note"] = (
+            "running and failed models only: detail=true lists every model"
+        )
     if not _TRT_JOB["running"]:
         res["summary"] = _trt_summary(items)
     return res
@@ -3358,19 +3987,29 @@ def cmd_start_recording(ctx, from_start: bool = False):
         raise CommandError("no target video/image selected (webcam not supported)")
     if vp.file_type == "image":
         # VisoMaster would open a "Cannot determine video length" message box (modal: the API would hang).
-        raise CommandError("the target is an image: recording needs a video (snapshot saves the swapped image; "
-                           "batch_input_faces / process_jobs save images too)")
+        raise CommandError(
+            "the target is an image: recording needs a video (snapshot saves the swapped image; "
+            "batch_input_faces / process_jobs save images too)"
+        )
     if getattr(vp, "processing", False) or getattr(vp, "is_processing_segments", False):
-        raise CommandError("playback in progress: stop it first (run_action buttonMediaPlay)")
+        raise CommandError(
+            "playback in progress: stop it first (run_action buttonMediaPlay)"
+        )
     if int(getattr(vp, "max_frame_number", 0) or 0) <= 0:
-        raise CommandError("cannot determine the video length (single-frame or unreadable video)")
+        raise CommandError(
+            "cannot determine the video length (single-frame or unreadable video)"
+        )
     for i, pair in enumerate(getattr(mw, "job_marker_pairs", None) or []):
         # Each invalid pair would open a message box in VisoMaster.
         if pair[1] is None:
-            raise CommandError(f"marker pair {i + 1} ({pair[0]}, None) has no end marker: set it, "
-                               "or remove the markers in VisoMaster")
+            raise CommandError(
+                f"marker pair {i + 1} ({pair[0]}, None) has no end marker: set it, "
+                "or remove the markers in VisoMaster"
+            )
         if pair[0] >= pair[1]:
-            raise CommandError(f"marker pair {i + 1} ({pair[0]}, {pair[1]}): the start must be before the end")
+            raise CommandError(
+                f"marker pair {i + 1} ({pair[0]}, {pair[1]}): the start must be before the end"
+            )
     if not str(mw.control.get("OutputMediaFolder", "")).strip():
         raise CommandError("no output folder: set OutputMediaFolder <folder>")
     try:
@@ -3386,8 +4025,10 @@ def cmd_start_recording(ctx, from_start: bool = False):
             # Seeking renders the first frame (and may load models): let it finish first.
             mw.videoSeekSlider.setValue(0)
             raise CommandError(
-                NOT_READY + "playhead moved to the first frame, VisoMaster is rendering it: "
-                + WAIT_THEN + "start_recording again"
+                NOT_READY
+                + "playhead moved to the first frame, VisoMaster is rendering it: "
+                + WAIT_THEN
+                + "start_recording again"
             )
         if last and int(mw.videoSeekSlider.value()) >= last - 1:
             # VisoMaster silently refuses to record from the last frame.
@@ -3399,25 +4040,37 @@ def cmd_start_recording(ctx, from_start: bool = False):
     ready = _readiness(mw)
     if not ready["ready"]:
         raise CommandError(
-            NOT_READY + "; ".join(ready["waiting_for"]) + ". " + WAIT_THEN + "start_recording "
+            NOT_READY
+            + "; ".join(ready["waiting_for"])
+            + ". "
+            + WAIT_THEN
+            + "start_recording "
             "(starting now would measure loading, not processing)"
         )
     previous = _REC.get("id")
     _REC_STARTER["by"] = "api"
     t_request = time.time()
-    mw.buttonMediaRecord.setChecked(True)  # VisoMaster starts its clock inside this call
+    mw.buttonMediaRecord.setChecked(
+        True
+    )  # VisoMaster starts its clock inside this call
     rec = _rec_update(mw)
     if rec and rec.get("id") != previous and rec.get("started_at", 0) > t_request:
-        rec["started_at"] = t_request  # elapsed_s then covers VisoMaster's own processing time
+        rec["started_at"] = (
+            t_request  # elapsed_s then covers VisoMaster's own processing time
+        )
     _REC_STARTER.pop("by", None)
     if not _recording(mw) and (rec or {}).get("id") == previous:
-        raise CommandError("VisoMaster did not start the recording (see its console for the reason)")
+        raise CommandError(
+            "VisoMaster did not start the recording (see its console for the reason)"
+        )
     swap = _swap_state(mw)
     res = {
         "recording": _recording(mw),
         "recording_info": _rec_view(rec),
-        "next": "call " + WAIT_REC + ": it returns when the video file is written (progress meanwhile); "
-                "stop_recording stops early",
+        "next": "call "
+        + WAIT_REC
+        + ": it returns when the video file is written (progress meanwhile); "
+        "stop_recording stops early",
     }
     if swap.get("note"):
         res["warning"] = swap["note"] + " (recording anyway, without face swap)"
@@ -3447,7 +4100,11 @@ def cmd_stop_recording(ctx):
         else:
             mw.control.pop(key, None)
     rec = _rec_view(_rec_update(mw))
-    return {"recording": _recording(mw), "result": (rec or {}).get("result"), "recording_info": rec}
+    return {
+        "recording": _recording(mw),
+        "result": (rec or {}).get("result"),
+        "recording_info": rec,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3475,7 +4132,9 @@ class _SilentProgress:
     def confirmedCanceled(self):
         return bool(_BATCH.get("cancel"))
 
-    def __getattr__(self, name):  # setWindowModality, setWindowTitle, show, close_without_confirmation...
+    def __getattr__(
+        self, name
+    ):  # setWindowModality, setWindowTitle, show, close_without_confirmation...
         return lambda *a, **k: None
 
 
@@ -3499,12 +4158,20 @@ def _batch_run(mw, all_faces: bool):
         from app.ui.widgets import widget_components
         from app.ui.widgets.actions import common_actions
     except Exception as e:  # nothing patched yet: just end the batch
-        _BATCH.update({"error": f"{type(e).__name__}: {e}", "finished_at": time.time(), "active": False})
+        _BATCH.update(
+            {
+                "error": f"{type(e).__name__}: {e}",
+                "finished_at": time.time(),
+                "active": False,
+            }
+        )
         return
 
     box_class = QtWidgets.QMessageBox
     native_question = box_class.question
-    orig_question = box_class.__dict__.get("question", native_question)  # the class attribute, put back as is
+    orig_question = box_class.__dict__.get(
+        "question", native_question
+    )  # the class attribute, put back as is
     orig_box = common_actions.create_and_show_messagebox
     orig_progress = widget_components.ProgressDialog
 
@@ -3514,7 +4181,9 @@ def _batch_run(mw, all_faces: bool):
         return native_question(parent, title, *a, **k)
 
     def message_box(parent, title, text, *a, **k):
-        _BATCH.setdefault("messages", []).append({"title": str(title), "text": str(text)})
+        _BATCH.setdefault("messages", []).append(
+            {"title": str(title), "text": str(text)}
+        )
         if str(title) == "Batch Complete":
             _BATCH["loop_finished_at"] = time.time()
 
@@ -3527,7 +4196,9 @@ def _batch_run(mw, all_faces: bool):
         _BATCH["error"] = f"{type(e).__name__}: {e}"
     finally:
         _BATCH["finished_at"] = time.time()
-        _BATCH["active"] = False  # first: never left stuck, whatever the restore below does
+        _BATCH["active"] = (
+            False  # first: never left stuck, whatever the restore below does
+        )
         box_class.question = orig_question
         common_actions.create_and_show_messagebox = orig_box
         widget_components.ProgressDialog = orig_progress
@@ -3537,33 +4208,69 @@ def _start_batch(mw, name: str, all_faces: bool) -> dict:
     """Checks what process_batch_images would report in a message box, then runs it on the next
     turn of the Qt event loop (it blocks the UI thread until the batch ends, like in VisoMaster)."""
     if _BATCH.get("active"):
-        raise CommandError("a batch is already running: " + WAIT_REC + ", or stop_recording to cancel it")
+        raise CommandError(
+            "a batch is already running: "
+            + WAIT_REC
+            + ", or stop_recording to cancel it"
+        )
     if not str(mw.control.get("OutputMediaFolder", "")).strip():
         raise CommandError("no output folder: set OutputMediaFolder <folder>")
-    ready = _readiness(mw)  # first: a list still loading would be counted (and processed) partly
+    ready = _readiness(
+        mw
+    )  # first: a list still loading would be counted (and processed) partly
     if not ready["ready"]:
-        raise CommandError(NOT_READY + "; ".join(ready["waiting_for"]) + ". " + WAIT_THEN + "run_action again")
+        raise CommandError(
+            NOT_READY
+            + "; ".join(ready["waiting_for"])
+            + ". "
+            + WAIT_THEN
+            + "run_action again"
+        )
     images, videos = _batch_media(mw, all_faces)
     if not images + videos:
-        raise CommandError("no image" + ("" if all_faces else " or video") + " in the target list: load_target_media")
-    sources = [f for f in (getattr(mw, "input_faces", {}) or {}).values() if f.isChecked()]
-    sources += [e for e in (getattr(mw, "merged_embeddings", {}) or {}).values() if e.isChecked()]
+        raise CommandError(
+            "no image"
+            + ("" if all_faces else " or video")
+            + " in the target list: load_target_media"
+        )
+    sources = [
+        f for f in (getattr(mw, "input_faces", {}) or {}).values() if f.isChecked()
+    ]
+    sources += [
+        e
+        for e in (getattr(mw, "merged_embeddings", {}) or {}).values()
+        if e.isChecked()
+    ]
     if not sources:
-        raise CommandError("no input face or embedding selected: select_embedding or select_input_face first")
+        raise CommandError(
+            "no input face or embedding selected: select_embedding or select_input_face first"
+        )
     _BATCH.clear()
-    _BATCH.update({
-        "id": f"batch-{_stamp()}", "action": name, "active": True,
-        "mode": "all faces (images only)" if all_faces else "selected face (images and videos)",
-        "started_at": time.time(), "total": images + videos, "images": images, "videos": videos, "done": 0,
-        "output_folder": str(mw.control.get("OutputMediaFolder")),
-    })
+    _BATCH.update(
+        {
+            "id": f"batch-{_stamp()}",
+            "action": name,
+            "active": True,
+            "mode": "all faces (images only)"
+            if all_faces
+            else "selected face (images and videos)",
+            "started_at": time.time(),
+            "total": images + videos,
+            "images": images,
+            "videos": videos,
+            "done": 0,
+            "output_folder": str(mw.control.get("OutputMediaFolder")),
+        }
+    )
     from PySide6 import QtCore
 
     QtCore.QTimer.singleShot(0, lambda: _batch_run(mw, all_faces))
     return {
         "triggered": name,
         "batch": _batch_view(),
-        "next": "call " + WAIT_REC + ": progress while it runs, then processing_time_s, processed / failed",
+        "next": "call "
+        + WAIT_REC
+        + ": progress while it runs, then processing_time_s, processed / failed",
     }
 
 
@@ -3572,19 +4279,32 @@ def _batch_view() -> dict | None:
     if not b:
         return None
     total, done = b.get("total") or 0, b.get("done") or 0
-    total = max(total, done)  # VisoMaster's batch reads its list live: it can grow while it runs
+    total = max(
+        total, done
+    )  # VisoMaster's batch reads its list live: it can grow while it runs
     loop_t0 = b.get("loop_started_at")
     view = {
-        "id": b["id"], "kind": "batch", "active": b["active"], "started_by": "api", "action": b["action"],
-        "mode": b["mode"], "started_at": b["started_at"], "output_folder": b["output_folder"],
+        "id": b["id"],
+        "kind": "batch",
+        "active": b["active"],
+        "started_by": "api",
+        "action": b["action"],
+        "mode": b["mode"],
+        "started_at": b["started_at"],
+        "output_folder": b["output_folder"],
     }
     for k in ("images", "videos", "media", "target_face", "input_faces"):
         if k in b:
             view[k] = b[k]
     if b["active"]:
         unit = "input faces" if b["action"] == "batch_input_faces" else "media items"
-        p = {"frames_written": done, "total_frames": total, "unit": unit,
-             "percent": round(100.0 * done / total, 1) if total else None, "current": b.get("current")}
+        p = {
+            "frames_written": done,
+            "total_frames": total,
+            "unit": unit,
+            "percent": round(100.0 * done / total, 1) if total else None,
+            "current": b.get("current"),
+        }
         if loop_t0 and done:
             elapsed = time.time() - loop_t0
             p["processing_fps"] = round(done / elapsed, 2)
@@ -3598,13 +4318,24 @@ def _batch_view() -> dict | None:
     if "processed" in b:  # counted by the API itself (batch_input_faces)
         processed, failed, done_ok = b["processed"], b["failed"], True
     else:  # VisoMaster's batch: its summary box, "...processed: N ... Failed...: M"
-        summary = next((m["text"] for m in b.get("messages", []) if m["title"] == "Batch Complete"), "")
+        summary = next(
+            (
+                m["text"]
+                for m in b.get("messages", [])
+                if m["title"] == "Batch Complete"
+            ),
+            "",
+        )
         counts = [int(n) for n in re.findall(r":\s*(\d+)", summary)]
         processed, failed = (counts + [None, None])[:2]
         done_ok = bool(summary)
     loop_t1 = b.get("loop_finished_at")
     frames_time = round(loop_t1 - loop_t0, 2) if loop_t0 and loop_t1 else None
-    state = "failed" if b.get("error") or not done_ok else ("stopped" if b.get("cancel") else "finished")
+    state = (
+        "failed"
+        if b.get("error") or not done_ok
+        else ("stopped" if b.get("cancel") else "finished")
+    )
     result = {
         "state": state,
         "exists": os.path.isdir(b["output_folder"]),
@@ -3614,9 +4345,13 @@ def _batch_view() -> dict | None:
         # From the first item to the summary box, like VisoMaster's progress window; total_s adds the
         # start and the restoring of the media shown before the batch.
         "processing_time_s": frames_time,
-        "average_fps": round(processed / frames_time, 2) if processed and frames_time else None,
+        "average_fps": round(processed / frames_time, 2)
+        if processed and frames_time
+        else None,
         "total_s": round(b["finished_at"] - b["started_at"], 2),
-        "messages": [m for m in b.get("messages", []) if m["title"] != "Batch Complete"],
+        "messages": [
+            m for m in b.get("messages", []) if m["title"] != "Batch Complete"
+        ],
     }
     if b.get("error"):
         result["error"] = b["error"]
@@ -3639,7 +4374,9 @@ def _sweep_run(mw, fid: str, ids: list):
     processed = failed = 0
     try:
         vca = _vca()
-        face = mw.target_faces[fid]  # KeyError if the user cleared the faces meanwhile: reported, batch ended
+        face = mw.target_faces[
+            fid
+        ]  # KeyError if the user cleared the faces meanwhile: reported, batch ended
         saved_inputs = dict(face.assigned_input_faces or {})
         out_folder = vca.resolve_output_folder(mw, str(vp.media_path))
         os.makedirs(out_folder, exist_ok=True)
@@ -3663,8 +4400,12 @@ def _sweep_run(mw, fid: str, ids: list):
                 frame = vp.current_frame
                 if not isinstance(frame, numpy.ndarray) or frame.size == 0:
                     raise RuntimeError("processing returned an empty frame")
-                path = _free_path(out_folder, f"{stem}__{Path(name).stem}", ".jpg" if jpeg else ".png")
-                image = Image.fromarray(frame[..., ::-1])  # same conversion as Save Image
+                path = _free_path(
+                    out_folder, f"{stem}__{Path(name).stem}", ".jpg" if jpeg else ".png"
+                )
+                image = Image.fromarray(
+                    frame[..., ::-1]
+                )  # same conversion as Save Image
                 if jpeg:
                     image.save(path, "JPEG", quality=95)
                 else:
@@ -3672,14 +4413,23 @@ def _sweep_run(mw, fid: str, ids: list):
                 processed += 1
             except Exception as e:
                 failed += 1
-                _BATCH.setdefault("messages", []).append({"title": "failed", "text": f"{name}: {type(e).__name__}: {e}"})
+                _BATCH.setdefault("messages", []).append(
+                    {"title": "failed", "text": f"{name}: {type(e).__name__}: {e}"}
+                )
         _BATCH["done"] = processed + failed
         _BATCH["loop_finished_at"] = time.time()
     except Exception as e:
         _BATCH["error"] = f"{type(e).__name__}: {e}"
     finally:
         # Marked ended first: whatever fails below, write commands are not refused until a restart.
-        _BATCH.update({"processed": processed, "failed": failed, "finished_at": time.time(), "active": False})
+        _BATCH.update(
+            {
+                "processed": processed,
+                "failed": failed,
+                "finished_at": time.time(),
+                "active": False,
+            }
+        )
         try:
             if face is not None:
                 face.assigned_input_faces = saved_inputs
@@ -3687,7 +4437,11 @@ def _sweep_run(mw, fid: str, ids: list):
             _common().refresh_frame(mw)  # preview back to the face's own sources
         except Exception as e:
             _BATCH.setdefault("messages", []).append(
-                {"title": "restore", "text": f"input faces of the target face not restored: {type(e).__name__}: {e}"})
+                {
+                    "title": "restore",
+                    "text": f"input faces of the target face not restored: {type(e).__name__}: {e}",
+                }
+            )
 
 
 def _free_path(folder: str, base: str, ext: str) -> str:
@@ -3700,33 +4454,51 @@ def _free_path(folder: str, base: str, ext: str) -> str:
 
 
 @command("batch_input_faces", write=True)
-def cmd_batch_input_faces(ctx, input_faces: list | None = None, face_id: str | None = None):
+def cmd_batch_input_faces(
+    ctx, input_faces: list | None = None, face_id: str | None = None
+):
     """Swap the current frame (image, or video frame at the playhead) once per input face, each one
     alone on the target face, and save each result to OutputMediaFolder as <media>__<input face>.png
     (.jpg with ImageFormatToggle; _2, _3... added when the file exists, never overwritten). Asynchronous: follow it with wait_recording (CLI: recording-wait)."""
     mw = ctx.mw
     vp = mw.video_processor
     if _BATCH.get("active"):
-        raise CommandError("a batch is already running: " + WAIT_REC + ", or stop_recording to cancel it")
-    if getattr(vp, "file_type", None) not in ("video", "image") or not getattr(vp, "media_path", None):
+        raise CommandError(
+            "a batch is already running: "
+            + WAIT_REC
+            + ", or stop_recording to cancel it"
+        )
+    if getattr(vp, "file_type", None) not in ("video", "image") or not getattr(
+        vp, "media_path", None
+    ):
         raise CommandError("no target image or video selected (webcam not supported)")
     if getattr(vp, "processing", False):
-        raise CommandError("playback in progress: stop it first (run_action buttonMediaPlay)")
+        raise CommandError(
+            "playback in progress: stop it first (run_action buttonMediaPlay)"
+        )
     if not str(mw.control.get("OutputMediaFolder", "")).strip():
         raise CommandError("no output folder: set OutputMediaFolder <folder>")
     faces = getattr(mw, "target_faces", {}) or {}
     fid = face_id or _selected_face(mw)
     if not fid or fid not in faces:
-        raise CommandError("no target face: find faces (run_action findTargetFacesButton), then select_target_face")
+        raise CommandError(
+            "no target face: find faces (run_action findTargetFacesButton), then select_target_face"
+        )
     if _swap_state(mw)["enabled"] is False:
-        raise CommandError("the face swap is off: every image would be the unswapped frame. "
-                           "run_action swapfacesButton to turn it on")
+        raise CommandError(
+            "the face swap is off: every image would be the unswapped frame. "
+            "run_action swapfacesButton to turn it on"
+        )
     if faces[fid].assigned_merged_embeddings:
-        raise CommandError("the target face has an embedding assigned, which VisoMaster would merge with each input "
-                           "face: remove it first (select_embedding <name> selected=false)")
+        raise CommandError(
+            "the target face has an embedding assigned, which VisoMaster would merge with each input "
+            "face: remove it first (select_embedding <name> selected=false)"
+        )
     ready = _readiness(mw)  # first: input faces still loading would be swept partly
     if not ready["ready"]:
-        raise CommandError(NOT_READY + "; ".join(ready["waiting_for"]) + ". " + WAIT_THEN + "try again")
+        raise CommandError(
+            NOT_READY + "; ".join(ready["waiting_for"]) + ". " + WAIT_THEN + "try again"
+        )
     inputs = getattr(mw, "input_faces", {}) or {}
     if not inputs:
         raise CommandError("no input face loaded: load_input_faces <folder>")
@@ -3739,17 +4511,31 @@ def cmd_batch_input_faces(ctx, input_faces: list | None = None, face_id: str | N
     else:
         ids = list(inputs)
     _BATCH.clear()
-    _BATCH.update({
-        "id": f"batch-{_stamp()}", "action": "batch_input_faces", "active": True,
-        "mode": "current frame x each input face", "started_at": time.time(), "total": len(ids), "done": 0,
-        "media": Path(str(vp.media_path)).name, "target_face": fid, "input_faces": len(ids),
-        "output_folder": str(mw.control.get("OutputMediaFolder")),
-    })
+    _BATCH.update(
+        {
+            "id": f"batch-{_stamp()}",
+            "action": "batch_input_faces",
+            "active": True,
+            "mode": "current frame x each input face",
+            "started_at": time.time(),
+            "total": len(ids),
+            "done": 0,
+            "media": Path(str(vp.media_path)).name,
+            "target_face": fid,
+            "input_faces": len(ids),
+            "output_folder": str(mw.control.get("OutputMediaFolder")),
+        }
+    )
     from PySide6 import QtCore
 
     QtCore.QTimer.singleShot(0, lambda: _sweep_run(mw, fid, ids))
-    return {"started": True, "batch": _batch_view(),
-            "next": "call " + WAIT_REC + ": progress while it runs, then processing_time_s, processed / failed"}
+    return {
+        "started": True,
+        "batch": _batch_view(),
+        "next": "call "
+        + WAIT_REC
+        + ": progress while it runs, then processing_time_s, processed / failed",
+    }
 
 
 @command("list_jobs")
@@ -3764,7 +4550,9 @@ def cmd_list_jobs(ctx):
 def cmd_process_jobs(ctx, jobs: list | None = None):
     """Start the job queue (all jobs, or the given list)."""
     if jobs is not None and not jobs:
-        raise CommandError("empty job list: give job names (see list_jobs), or leave jobs out to run them all")
+        raise CommandError(
+            "empty job list: give job names (see list_jobs), or leave jobs out to run them all"
+        )
     from app.ui.widgets.actions import job_manager_actions
 
     mw = ctx.mw
@@ -3790,7 +4578,9 @@ def cmd_quit(ctx, save: bool = True):
     res = {"closing": True, "workspace_saved_on_close": bool(save)}
     if save:
         try:
-            kept = _keep_last_workspace(Path(mw.last_workspace_path))  # VisoMaster overwrites it on close
+            kept = _keep_last_workspace(
+                Path(mw.last_workspace_path)
+            )  # VisoMaster overwrites it on close
             if kept:
                 res["previous_kept"] = kept
         except OSError as e:

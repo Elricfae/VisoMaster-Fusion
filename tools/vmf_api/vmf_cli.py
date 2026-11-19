@@ -61,22 +61,27 @@ def call(command: str, args: dict | None = None, timeout: float = 700.0):
     if not rt:
         raise ApiError(
             "VisoMaster is not running with the API (no runtime/server.json). "
-            "Tick \"Enable API / MCP\" in the launcher, then launch VisoMaster."
+            'Tick "Enable API / MCP" in the launcher, then launch VisoMaster.'
         )
     if rt.get("pid") and _pid_gone(rt["pid"]):
         # Left over by a VisoMaster that crashed: another program may now listen on that port and would
         # receive the token and the arguments.
         raise ApiError(
             "VisoMaster is not running with the API (runtime/server.json is left over from a closed session). "
-            "Tick \"Enable API / MCP\" in the launcher, then launch VisoMaster."
+            'Tick "Enable API / MCP" in the launcher, then launch VisoMaster.'
         )
     url = f"http://127.0.0.1:{int(rt['port'])}/api/{command}"
-    body = json.dumps({k: v for k, v in (args or {}).items() if v is not None}).encode("utf-8")
+    body = json.dumps({k: v for k, v in (args or {}).items() if v is not None}).encode(
+        "utf-8"
+    )
     req = urllib.request.Request(
         url,
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {rt['token']}"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {rt['token']}",
+        },
     )
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
@@ -104,8 +109,11 @@ def poll(command: str, args: dict | None = None, tries: int = 3):
             return call(command, args, timeout=60)
         except ApiError as e:
             msg = str(e)
-            transient = (msg.startswith("API unreachable") or "did not process the command in time" in msg
-                         or "still running in VisoMaster after the timeout" in msg)
+            transient = (
+                msg.startswith("API unreachable")
+                or "did not process the command in time" in msg
+                or "still running in VisoMaster after the timeout" in msg
+            )
             if i == tries - 1 or not transient:
                 raise
             time.sleep(2)
@@ -116,7 +124,9 @@ def _abs(p: str | None) -> str | None:
         return None
     # Never resolved: merely checking a \\host\share path makes Windows send the user's credentials to the host.
     if str(p).replace("/", "\\").startswith("\\\\"):
-        raise ApiError(f"refused: network or device path ({p}): use a local file or folder")
+        raise ApiError(
+            f"refused: network or device path ({p}): use a local file or folder"
+        )
     return str(Path(p).expanduser().resolve())
 
 
@@ -149,7 +159,9 @@ def _trt_progress_line(st: dict) -> str:
     return line
 
 
-def wait_tensorrt(max_wait: float = 3600, interval: float = 5, on_progress=None) -> dict:
+def wait_tensorrt(
+    max_wait: float = 3600, interval: float = 5, on_progress=None
+) -> dict:
     """Block until the TensorRT build finishes (or max_wait), polling the API."""
     deadline = time.time() + max_wait
     while True:
@@ -160,7 +172,9 @@ def wait_tensorrt(max_wait: float = 3600, interval: float = 5, on_progress=None)
             st["wait"] = "finished"
             return st
         if time.time() >= deadline:
-            st["wait"] = f"still running after waiting {max_wait:.0f} s (the build goes on)"
+            st["wait"] = (
+                f"still running after waiting {max_wait:.0f} s (the build goes on)"
+            )
             return st
         time.sleep(interval)
 
@@ -174,18 +188,28 @@ def _rec_progress_line(rec: dict) -> str:
         if batch:
             line = f"{res['state']}: {res.get('processed')} processed, {res.get('failed')} failed"
             if res.get("processing_time_s") is not None:
-                line += f" in {res['processing_time_s']} s ({res.get('average_fps')} per s)"
+                line += (
+                    f" in {res['processing_time_s']} s ({res.get('average_fps')} per s)"
+                )
             return line + f" -> {res.get('output_path')}"
         if res.get("exists"):
             return f"{res['state']}: {res.get('output_path')} ({res.get('size_bytes') or 0} bytes)"
         return f"{res['state']}: {res.get('hint', 'no output file')}"
     p = rec.get("progress") or {}
     done, total = p.get("frames_written", 0), p.get("total_frames") or "?"
-    line = f"batch {done}/{total} {p.get('unit') or 'items'}" if batch else f"recording {done}/{total} frames"
+    line = (
+        f"batch {done}/{total} {p.get('unit') or 'items'}"
+        if batch
+        else f"recording {done}/{total} frames"
+    )
     if p.get("percent") is not None:
         line += f" ({p['percent']}%)"
     if p.get("processing_fps"):
-        line += f", {p['processing_fps']} per s" if batch else f", {p['processing_fps']} fps"
+        line += (
+            f", {p['processing_fps']} per s"
+            if batch
+            else f", {p['processing_fps']} fps"
+        )
     if p.get("eta_s") is not None:
         line += f", about {p['eta_s']} s left"
     if p.get("phase"):
@@ -199,7 +223,9 @@ def _ready_line(st: dict) -> str:
     return "waiting: " + "; ".join(st.get("waiting_for") or [])
 
 
-def wait_ready(max_wait: float = 1800, quiet: float = 2.0, interval: float = 0.5, on_progress=None) -> dict:
+def wait_ready(
+    max_wait: float = 1800, quiet: float = 2.0, interval: float = 0.5, on_progress=None
+) -> dict:
     """Block until VisoMaster is idle (no model loading, no preview frame) for `quiet` seconds."""
     deadline = time.time() + max_wait
     since = None
@@ -233,13 +259,19 @@ def start_recording_when_ready(from_start: bool = False, on_progress=None) -> di
     # What waiting would not end by itself: say so at once instead of waiting up to 30 min.
     s = call("status")
     if s.get("recording"):
-        raise ApiError("a recording is already running: wait_recording, or stop_recording")
+        raise ApiError(
+            "a recording is already running: wait_recording, or stop_recording"
+        )
     if (s.get("batch_info") or {}).get("active"):
-        raise ApiError("a batch is running: wait_recording, or stop_recording to cancel it")
+        raise ApiError(
+            "a batch is running: wait_recording, or stop_recording to cancel it"
+        )
     if s.get("scan_active") or s.get("job_queue_running"):
         raise ApiError("a scan or the job queue is running: wait for it to end")
     if s.get("processing"):
-        raise ApiError("playback in progress: stop it first (run_action buttonMediaPlay)")
+        raise ApiError(
+            "playback in progress: stop it first (run_action buttonMediaPlay)"
+        )
     for _ in range(3):
         st = wait_ready(on_progress=on_progress)
         if not st.get("ready"):
@@ -272,7 +304,9 @@ def call_when_ready(command: str, args: dict, on_progress=None) -> dict:
     raise ApiError("VisoMaster kept being busy: try again")
 
 
-def wait_recording(max_wait: float = 3 * 3600, interval: float = 5, on_progress=None) -> dict:
+def wait_recording(
+    max_wait: float = 3 * 3600, interval: float = 5, on_progress=None
+) -> dict:
     """Block until the recording ends and its file is written (or max_wait), polling the API."""
     deadline = time.time() + max_wait
     while True:
@@ -280,10 +314,14 @@ def wait_recording(max_wait: float = 3 * 3600, interval: float = 5, on_progress=
         if on_progress:
             on_progress(rec)
         if not rec.get("active"):
-            rec["wait"] = "finished" if rec.get("result") else "no recording in progress"
+            rec["wait"] = (
+                "finished" if rec.get("result") else "no recording in progress"
+            )
             return rec
         if time.time() >= deadline:
-            rec["wait"] = f"still recording after waiting {max_wait:.0f} s (the recording goes on)"
+            rec["wait"] = (
+                f"still recording after waiting {max_wait:.0f} s (the recording goes on)"
+            )
             return rec
         time.sleep(interval)
 
@@ -310,14 +348,22 @@ def visomaster_running() -> tuple[bool | None, str]:
     try:
         ps = (
             "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
-            "ForEach-Object { \"$($_.ProcessId)`t$($_.ExecutablePath)`t$($_.CommandLine)\" }"
+            'ForEach-Object { "$($_.ProcessId)`t$($_.ExecutablePath)`t$($_.CommandLine)" }'
         )
         # Full path: a bare "powershell" is looked up in the current folder first, where a planted
         # powershell.exe would run instead.
-        powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        powershell = (
+            Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
         out = subprocess.run(
             [str(powershell), "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         ).stdout
     except Exception as e:
         return None, f"cannot inspect processes: {e}"
@@ -328,7 +374,9 @@ def visomaster_running() -> tuple[bool | None, str]:
         low = cmdline.lower().replace("/", "\\")
         runs_main = low.rstrip('" ').endswith("main.py")
         # Start_Portable.bat runs "<portable python>" "main.py" from VisoMaster's folder: a relative path.
-        if main_py in low or (runs_main and (str(APP_DIR).lower() in low or exe.lower() == portable_py)):
+        if main_py in low or (
+            runs_main and (str(APP_DIR).lower() in low or exe.lower() == portable_py)
+        ):
             return True, f"VisoMaster process found (pid {pid})"
     return False, ""
 
@@ -365,7 +413,9 @@ def _pid_gone(pid) -> bool:
         k = ctypes.WinDLL("kernel32", use_last_error=True)
         h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
         if not h:
-            return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: no such process
+            return (
+                ctypes.get_last_error() == 87
+            )  # ERROR_INVALID_PARAMETER: no such process
         code = ctypes.c_ulong()
         ok = k.GetExitCodeProcess(h, ctypes.byref(code))
         k.CloseHandle(h)
@@ -378,15 +428,21 @@ def _python_exe() -> Path:
     override = os.environ.get("VMF_PYTHON")
     py = Path(override) if override else PORTABLE_DIR / "python" / "python.exe"
     if not py.is_file():
-        raise ApiError(f"VisoMaster's Python not found: {py} (set VMF_PYTHON to its python.exe)")
+        raise ApiError(
+            f"VisoMaster's Python not found: {py} (set VMF_PYTHON to its python.exe)"
+        )
     return py
 
 
 def _launch_env(hidden: bool, port: int, extra: dict | None = None) -> dict:
     env = dict(os.environ)
     for k in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "QT_QPA_PLATFORM"):
-        env.pop(k, None)  # the MCP server runs in its own venv: never leak it into VisoMaster
-    env.update(VMF_API="1", VMF_API_PORT=str(port), PYTHONUTF8="1", PYTHONUNBUFFERED="1")  # live log
+        env.pop(
+            k, None
+        )  # the MCP server runs in its own venv: never leak it into VisoMaster
+    env.update(
+        VMF_API="1", VMF_API_PORT=str(port), PYTHONUTF8="1", PYTHONUNBUFFERED="1"
+    )  # live log
     ffmpeg = sorted(PORTABLE_DIR.glob("ffmpeg-*/bin"))
     if ffmpeg:
         env["PATH"] = str(ffmpeg[-1]) + os.pathsep + env.get("PATH", "")
@@ -394,10 +450,14 @@ def _launch_env(hidden: bool, port: int, extra: dict | None = None) -> dict:
         env["QT_QPA_PLATFORM"] = "offscreen"  # Qt renders off screen: no window at all
     bad = sorted(str(k) for k in (extra or {}) if not _env_allowed(str(k)))
     if bad:
-        raise ApiError(f"environment variables not allowed: {bad} (only VISOMASTER_* and VMF_* switches, "
-                       f"except {sorted(_ENV_RESERVED)}: others could make VisoMaster load code from elsewhere)")
+        raise ApiError(
+            f"environment variables not allowed: {bad} (only VISOMASTER_* and VMF_* switches, "
+            f"except {sorted(_ENV_RESERVED)}: others could make VisoMaster load code from elsewhere)"
+        )
     for k, v in (extra or {}).items():
-        env[str(k)] = str(v)  # e.g. VisoMaster's own switches (VISOMASTER_CUDA_SPIN_SYNC=1)
+        env[str(k)] = str(
+            v
+        )  # e.g. VisoMaster's own switches (VISOMASTER_CUDA_SPIN_SYNC=1)
     return env
 
 
@@ -411,8 +471,13 @@ def _env_allowed(name: str) -> bool:
     return n.startswith(("VISOMASTER_", "VMF_")) and n not in _ENV_RESERVED
 
 
-def launch(hidden: bool = False, port: int | None = None, max_wait: float = 300, on_progress=None,
-           env: dict | None = None) -> dict:
+def launch(
+    hidden: bool = False,
+    port: int | None = None,
+    max_wait: float = 300,
+    on_progress=None,
+    env: dict | None = None,
+) -> dict:
     """Start VisoMaster with the API (hidden=True: without any window), wait until the API answers
     and VisoMaster is idle. env: extra environment variables for VisoMaster's process."""
     running, detail = visomaster_running()
@@ -420,28 +485,47 @@ def launch(hidden: bool = False, port: int | None = None, max_wait: float = 300,
         rt = read_runtime() or {}
         if _port_open(rt.get("port", 0)):
             if env:
-                raise ApiError("VisoMaster is already running, so env would not apply: quit_visomaster first, "
-                               "then launch again with env")
-            return {"already_running": True, "pid": rt.get("pid"), "port": rt.get("port"),
-                    "note": "already running, launched earlier (hidden or not as it was then): quit_visomaster "
-                            "first to relaunch it differently"}
-        raise ApiError(f"VisoMaster is already running without the API ({detail}): close it first")
+                raise ApiError(
+                    "VisoMaster is already running, so env would not apply: quit_visomaster first, "
+                    "then launch again with env"
+                )
+            return {
+                "already_running": True,
+                "pid": rt.get("pid"),
+                "port": rt.get("port"),
+                "note": "already running, launched earlier (hidden or not as it was then): quit_visomaster "
+                "first to relaunch it differently",
+            }
+        raise ApiError(
+            f"VisoMaster is already running without the API ({detail}): close it first"
+        )
     port = int(port or read_config()["port"])
-    if _port_open(port):  # VisoMaster would start WITHOUT its API (port taken) and stay running unseen
-        raise ApiError(f"port {port} is already used by another program: free it, or choose another port "
-                       f"(vmf-cli api --port N)")
-    _launch_env(hidden, port, env)  # refuses a disallowed env before anything is started
+    if _port_open(
+        port
+    ):  # VisoMaster would start WITHOUT its API (port taken) and stay running unseen
+        raise ApiError(
+            f"port {port} is already used by another program: free it, or choose another port "
+            f"(vmf-cli api --port N)"
+        )
+    _launch_env(
+        hidden, port, env
+    )  # refuses a disallowed env before anything is started
     if hidden and not (APP_DIR / "last_workspace.json").is_file():
         # First start: VisoMaster asks for the execution provider in a dialog before its window opens.
-        raise ApiError("first start of this VisoMaster (no last_workspace.json): it asks for the execution "
-                       "provider in a dialog, which stays invisible without a window. Launch it once with its "
-                       "window (without hidden), choose the provider, quit, then launch it hidden")
+        raise ApiError(
+            "first start of this VisoMaster (no last_workspace.json): it asks for the execution "
+            "provider in a dialog, which stays invisible without a window. Launch it once with its "
+            "window (without hidden), choose the provider, quit, then launch it hidden"
+        )
     LAUNCH_LOG.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     with open(LAUNCH_LOG, "w", encoding="utf-8", errors="replace") as logf:
         proc = subprocess.Popen(
             [str(_python_exe()), "-X", "utf8", str(APP_DIR / "main.py")],
-            cwd=str(APP_DIR), env=_launch_env(hidden, port, env), stdin=subprocess.DEVNULL, stdout=logf,
+            cwd=str(APP_DIR),
+            env=_launch_env(hidden, port, env),
+            stdin=subprocess.DEVNULL,
+            stdout=logf,
             stderr=subprocess.STDOUT,
             # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: a hidden console, inherited by VisoMaster's
             # ffmpeg / ffprobe children. Detached (no console), each child opened its own console window
@@ -452,7 +536,9 @@ def launch(hidden: bool = False, port: int | None = None, max_wait: float = 300,
     while True:
         if proc.poll() is not None:
             tail = LAUNCH_LOG.read_text(encoding="utf-8", errors="replace")[-1500:]
-            raise ApiError(f"VisoMaster exited during startup (code {proc.returncode}); end of {LAUNCH_LOG}:\n{tail}")
+            raise ApiError(
+                f"VisoMaster exited during startup (code {proc.returncode}); end of {LAUNCH_LOG}:\n{tail}"
+            )
         rt = read_runtime() or {}
         if rt.get("pid") == proc.pid and _port_open(rt.get("port", 0)):
             break
@@ -460,17 +546,23 @@ def launch(hidden: bool = False, port: int | None = None, max_wait: float = 300,
             if hidden:
                 # Never leave a VisoMaster nobody can reach (hidden = no window to close it from).
                 proc.kill()
-                raise ApiError(f"the API did not answer within {max_wait:.0f} s: VisoMaster (pid {proc.pid}) "
-                               f"was stopped (a dialog waiting for an answer before the window opens?); "
-                               f"see {LAUNCH_LOG}")
+                raise ApiError(
+                    f"the API did not answer within {max_wait:.0f} s: VisoMaster (pid {proc.pid}) "
+                    f"was stopped (a dialog waiting for an answer before the window opens?); "
+                    f"see {LAUNCH_LOG}"
+                )
             # With a window, a dialog may be waiting for the user (first start: execution provider).
-            raise ApiError(f"the API did not answer within {max_wait:.0f} s: VisoMaster (pid {proc.pid}) is left "
-                           f"running, a dialog may be waiting for an answer on screen; see {LAUNCH_LOG}")
+            raise ApiError(
+                f"the API did not answer within {max_wait:.0f} s: VisoMaster (pid {proc.pid}) is left "
+                f"running, a dialog may be waiting for an answer on screen; see {LAUNCH_LOG}"
+            )
         if on_progress:
             on_progress({"waiting_for": ["VisoMaster starting"]})
         time.sleep(1)
     try:
-        ready = wait_ready(max_wait=max(30.0, max_wait - (time.time() - t0)), on_progress=on_progress)
+        ready = wait_ready(
+            max_wait=max(30.0, max_wait - (time.time() - t0)), on_progress=on_progress
+        )
     except ApiError:
         # Closed while loading (its window, or a crash): its API file goes first, so the wait would only
         # say "not running with the API" and advise the launcher checkbox, which was ticked by this launch.
@@ -480,11 +572,18 @@ def launch(hidden: bool = False, port: int | None = None, max_wait: float = 300,
             code = None
         if code is None:
             raise
-        raise ApiError(f"VisoMaster was closed before it was ready (exit code {code}). It had started with "
-                       f"the API: launch it again to use it; see {LAUNCH_LOG}") from None
+        raise ApiError(
+            f"VisoMaster was closed before it was ready (exit code {code}). It had started with "
+            f"the API: launch it again to use it; see {LAUNCH_LOG}"
+        ) from None
     return {
-        "launched": True, "pid": proc.pid, "port": port, "hidden": hidden,
-        "startup_s": round(time.time() - t0, 1), "ready": ready.get("ready"), "log": str(LAUNCH_LOG),
+        "launched": True,
+        "pid": proc.pid,
+        "port": port,
+        "hidden": hidden,
+        "startup_s": round(time.time() - t0, 1),
+        "ready": ready.get("ready"),
+        "log": str(LAUNCH_LOG),
         **({"env": {str(k): str(v) for k, v in env.items()}} if env else {}),
     }
 
@@ -501,11 +600,22 @@ def quit_visomaster(save: bool = True, max_wait: float = 120) -> dict:
     return res
 
 
-_quit_and_wait = quit_visomaster  # the MCP tool of the same name shadows it inside run_mcp
+_quit_and_wait = (
+    quit_visomaster  # the MCP tool of the same name shadows it inside run_mcp
+)
 
 
-def apply_offline(path, workspace=None, faces="selected", no_control=False, no_params=False,
-                  source_face=None, missing="keep", dry_run=False, force=False) -> dict:
+def apply_offline(
+    path,
+    workspace=None,
+    faces="selected",
+    no_control=False,
+    no_params=False,
+    source_face=None,
+    missing="keep",
+    dry_run=False,
+    force=False,
+) -> dict:
     import merge
     import schema as schema_mod
 
@@ -517,7 +627,9 @@ def apply_offline(path, workspace=None, faces="selected", no_control=False, no_p
     if not dry_run:
         running, detail = visomaster_running()
         if running:
-            raise ApiError(f"VisoMaster is running ({detail}): it would overwrite {ws_path.name} on exit. Close VisoMaster or use apply-config.")
+            raise ApiError(
+                f"VisoMaster is running ({detail}): it would overwrite {ws_path.name} on exit. Close VisoMaster or use apply-config."
+            )
         if running is None and not force:
             raise ApiError(f"{detail}; use --force if VisoMaster is really closed")
     schema = schema_mod.from_source(APP_DIR)
@@ -526,8 +638,10 @@ def apply_offline(path, workspace=None, faces="selected", no_control=False, no_p
     with open(ws_path, encoding="utf-8") as f:
         ws = json.load(f)
     if not isinstance(ws, dict) or not isinstance(ws.get("control"), dict):
-        raise ApiError(f"not a VisoMaster workspace (no \"control\" settings): {ws_path}")
-    new, report = merge.merge_into_workspace(ws, imported, schema, rules, faces, not no_control, not no_params, missing)
+        raise ApiError(f'not a VisoMaster workspace (no "control" settings): {ws_path}')
+    new, report = merge.merge_into_workspace(
+        ws, imported, schema, rules, faces, not no_control, not no_params, missing
+    )
     report["workspace"] = str(ws_path)
     if dry_run:
         report["dry_run"] = True
@@ -557,89 +671,202 @@ def _parse_value(text: str):
 
 def _add_import_opts(p):
     p.add_argument("path")
-    p.add_argument("--faces", default="selected", help="all | selected | <face_id> (default: selected)")
-    p.add_argument("--no-control", action="store_true", help="do not touch global settings")
-    p.add_argument("--no-params", action="store_true", help="do not touch per-face parameters")
-    p.add_argument("--source-face", help="multi-face workspace: face to take the parameters from")
-    p.add_argument("--missing", choices=["keep", "default"], default="keep",
-                   help="keys missing from the file: keep mine (default) or reset to default")
+    p.add_argument(
+        "--faces",
+        default="selected",
+        help="all | selected | <face_id> (default: selected)",
+    )
+    p.add_argument(
+        "--no-control", action="store_true", help="do not touch global settings"
+    )
+    p.add_argument(
+        "--no-params", action="store_true", help="do not touch per-face parameters"
+    )
+    p.add_argument(
+        "--source-face", help="multi-face workspace: face to take the parameters from"
+    )
+    p.add_argument(
+        "--missing",
+        choices=["keep", "default"],
+        default="keep",
+        help="keys missing from the file: keep mine (default) or reset to default",
+    )
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(prog="vmf-cli", description="Drive VisoMaster Fusion (local API).")
+    ap = argparse.ArgumentParser(
+        prog="vmf-cli", description="Drive VisoMaster Fusion (local API)."
+    )
     ap.add_argument("--compact", action="store_true", help="one-line JSON")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status")
     sub.add_parser("help", help="commands exposed by the API")
-    p = sub.add_parser("get-config"); p.add_argument("--face-id"); p.add_argument("--keys", nargs="*")
-    p = sub.add_parser("export-config"); p.add_argument("path", nargs="?"); p.add_argument("--face-id")
+    p = sub.add_parser("get-config")
+    p.add_argument("--face-id")
+    p.add_argument("--keys", nargs="*")
+    p = sub.add_parser("export-config")
+    p.add_argument("path", nargs="?")
+    p.add_argument("--face-id")
     p.add_argument("--include-personal", action="store_true")
-    p = sub.add_parser("diff"); _add_import_opts(p)
-    p = sub.add_parser("apply-config"); _add_import_opts(p); p.add_argument("--dry-run", action="store_true")
-    p = sub.add_parser("press-parameter-button", help="click a button attached to a setting (e.g. Apply)")
-    p.add_argument("key"); p.add_argument("--label")
+    p = sub.add_parser("diff")
+    _add_import_opts(p)
+    p = sub.add_parser("apply-config")
+    _add_import_opts(p)
+    p.add_argument("--dry-run", action="store_true")
+    p = sub.add_parser(
+        "press-parameter-button",
+        help="click a button attached to a setting (e.g. Apply)",
+    )
+    p.add_argument("key")
+    p.add_argument("--label")
     p.add_argument("--confirm", help="code returned by a first call (reset buttons)")
     sub.add_parser("list-backups")
-    p = sub.add_parser("save-backup", help="save the current config under a name"); p.add_argument("name")
-    p = sub.add_parser("restore-backup"); p.add_argument("name", nargs="?")
-    p = sub.add_parser("set"); p.add_argument("key"); p.add_argument("value"); p.add_argument("--face-id")
-    p = sub.add_parser("schema"); p.add_argument("key", nargs="?"); p.add_argument("--group")
-    p = sub.add_parser("snapshot"); p.add_argument("path", nargs="?"); p.add_argument("--view", action="store_true")
-    p = sub.add_parser("list-actions"); p.add_argument("--enabled-only", action="store_true")
-    p = sub.add_parser("run-action"); p.add_argument("name")
-    p.add_argument("--confirm", help="code returned by the warning of a destructive action")
-    p = sub.add_parser("load-workspace"); p.add_argument("path")
-    p = sub.add_parser("save-workspace"); p.add_argument("path", nargs="?")
-    p = sub.add_parser("load-target-media", help="load a folder or files (--wait: until all are loaded)")
-    p.add_argument("paths", nargs="+"); p.add_argument("--wait", action="store_true")
-    p = sub.add_parser("load-input-faces", help="load a folder or images (--wait: until all are loaded)")
-    p.add_argument("paths", nargs="+"); p.add_argument("--wait", action="store_true")
-    p = sub.add_parser("select-target-media", help="no argument: list"); p.add_argument("name", nargs="?")
-    p = sub.add_parser("select-target-face", help="no argument: list"); p.add_argument("face_id", nargs="?")
-    p = sub.add_parser("list-tensorrt-models"); p.add_argument("--only", choices=["missing", "built", "active", "loaded"])
-    p = sub.add_parser("build-tensorrt-cache", help='no argument: active models; "all"; "failed"; or names')
+    p = sub.add_parser("save-backup", help="save the current config under a name")
+    p.add_argument("name")
+    p = sub.add_parser("restore-backup")
+    p.add_argument("name", nargs="?")
+    p = sub.add_parser("set")
+    p.add_argument("key")
+    p.add_argument("value")
+    p.add_argument("--face-id")
+    p = sub.add_parser("schema")
+    p.add_argument("key", nargs="?")
+    p.add_argument("--group")
+    p = sub.add_parser("snapshot")
+    p.add_argument("path", nargs="?")
+    p.add_argument("--view", action="store_true")
+    p = sub.add_parser("list-actions")
+    p.add_argument("--enabled-only", action="store_true")
+    p = sub.add_parser("run-action")
+    p.add_argument("name")
+    p.add_argument(
+        "--confirm", help="code returned by the warning of a destructive action"
+    )
+    p = sub.add_parser("load-workspace")
+    p.add_argument("path")
+    p = sub.add_parser("save-workspace")
+    p.add_argument("path", nargs="?")
+    p = sub.add_parser(
+        "load-target-media",
+        help="load a folder or files (--wait: until all are loaded)",
+    )
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--wait", action="store_true")
+    p = sub.add_parser(
+        "load-input-faces",
+        help="load a folder or images (--wait: until all are loaded)",
+    )
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--wait", action="store_true")
+    p = sub.add_parser("select-target-media", help="no argument: list")
+    p.add_argument("name", nargs="?")
+    p = sub.add_parser("select-target-face", help="no argument: list")
+    p.add_argument("face_id", nargs="?")
+    p = sub.add_parser("list-tensorrt-models")
+    p.add_argument("--only", choices=["missing", "built", "active", "loaded"])
+    p = sub.add_parser(
+        "build-tensorrt-cache",
+        help='no argument: active models; "all"; "failed"; or names',
+    )
     p.add_argument("models", nargs="*")
-    p.add_argument("--rebuild", action="store_true", help="delete and recompile existing engines (warning + code)")
+    p.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="delete and recompile existing engines (warning + code)",
+    )
     p.add_argument("--confirm", help="code returned by the --rebuild warning")
     p = sub.add_parser("tensorrt-build-status")
-    p.add_argument("--detail", action="store_true", help="list every model (default: running and failed only)")
-    p = sub.add_parser("tensorrt-wait", help="wait for the build to finish and print the final status")
-    p.add_argument("--max-wait", type=float, default=3 * 3600, help="seconds (default: 3 h)")
+    p.add_argument(
+        "--detail",
+        action="store_true",
+        help="list every model (default: running and failed only)",
+    )
+    p = sub.add_parser(
+        "tensorrt-wait", help="wait for the build to finish and print the final status"
+    )
+    p.add_argument(
+        "--max-wait", type=float, default=3 * 3600, help="seconds (default: 3 h)"
+    )
     p.add_argument("--interval", type=float, default=5)
     sub.add_parser("cancel-tensorrt-build")
     sub.add_parser("recording-status")
-    sub.add_parser("ready-status", help="is VisoMaster idle (no model loading, no preview frame)?")
+    sub.add_parser(
+        "ready-status", help="is VisoMaster idle (no model loading, no preview frame)?"
+    )
     p = sub.add_parser("ready-wait", help="wait until VisoMaster is idle")
     p.add_argument("--max-wait", type=float, default=1800)
-    p = sub.add_parser("recording-wait", help="wait until the recording ends and print the output file")
-    p.add_argument("--max-wait", type=float, default=3 * 3600, help="seconds (default: 3 h)")
+    p = sub.add_parser(
+        "recording-wait", help="wait until the recording ends and print the output file"
+    )
+    p.add_argument(
+        "--max-wait", type=float, default=3 * 3600, help="seconds (default: 3 h)"
+    )
     p.add_argument("--interval", type=float, default=5)
-    p = sub.add_parser("select-input-face", help="assign a loaded input face to a target face (no name: list)")
-    p.add_argument("name", nargs="?"); p.add_argument("--face-id"); p.add_argument("--unselect", action="store_true")
+    p = sub.add_parser(
+        "select-input-face",
+        help="assign a loaded input face to a target face (no name: list)",
+    )
+    p.add_argument("name", nargs="?")
+    p.add_argument("--face-id")
+    p.add_argument("--unselect", action="store_true")
     sub.add_parser("list-embeddings")
-    p = sub.add_parser("select-embedding", help="embedding (id or name) for a target face's swap")
-    p.add_argument("embedding"); p.add_argument("--face-id"); p.add_argument("--unselect", action="store_true")
-    p = sub.add_parser("start-recording"); p.add_argument("--from-start", action="store_true", help="record from the first frame")
+    p = sub.add_parser(
+        "select-embedding", help="embedding (id or name) for a target face's swap"
+    )
+    p.add_argument("embedding")
+    p.add_argument("--face-id")
+    p.add_argument("--unselect", action="store_true")
+    p = sub.add_parser("start-recording")
+    p.add_argument(
+        "--from-start", action="store_true", help="record from the first frame"
+    )
     sub.add_parser("stop-recording")
     sub.add_parser("list-jobs")
-    p = sub.add_parser("process-jobs"); p.add_argument("jobs", nargs="*")
-    p = sub.add_parser("batch-input-faces", help="swap the current frame once per input face (then recording-wait)")
-    p.add_argument("input_faces", nargs="*"); p.add_argument("--face-id")
-    p = sub.add_parser("apply-offline", help="merge directly into last_workspace.json (VisoMaster closed)")
+    p = sub.add_parser("process-jobs")
+    p.add_argument("jobs", nargs="*")
+    p = sub.add_parser(
+        "batch-input-faces",
+        help="swap the current frame once per input face (then recording-wait)",
+    )
+    p.add_argument("input_faces", nargs="*")
+    p.add_argument("--face-id")
+    p = sub.add_parser(
+        "apply-offline",
+        help="merge directly into last_workspace.json (VisoMaster closed)",
+    )
     _add_import_opts(p)
-    p.add_argument("--workspace", help="default: VisoMaster-Fusion\\last_workspace.json")
+    p.add_argument(
+        "--workspace", help="default: VisoMaster-Fusion\\last_workspace.json"
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true", help="if process detection fails")
-    p = sub.add_parser("api", help="API state and port (the launcher checkbox is unticked at each start)")
-    p.add_argument("--port", type=_port_arg, help="port used at the next launch (1024-65535)")
-    p = sub.add_parser("quit", help="close VisoMaster (saves the workspace) and wait for it to exit")
+    p = sub.add_parser(
+        "api",
+        help="API state and port (the launcher checkbox is unticked at each start)",
+    )
+    p.add_argument(
+        "--port", type=_port_arg, help="port used at the next launch (1024-65535)"
+    )
+    p = sub.add_parser(
+        "quit", help="close VisoMaster (saves the workspace) and wait for it to exit"
+    )
     p.add_argument("--no-save", action="store_true")
-    p = sub.add_parser("launch", help="start VisoMaster with the API, wait until it is ready")
-    p.add_argument("--hidden", action="store_true", help="no window at all (Qt offscreen)")
+    p = sub.add_parser(
+        "launch", help="start VisoMaster with the API, wait until it is ready"
+    )
+    p.add_argument(
+        "--hidden", action="store_true", help="no window at all (Qt offscreen)"
+    )
     p.add_argument("--port", type=_port_arg)
-    p.add_argument("--env", action="append", default=[], metavar="KEY=VALUE", type=_env_arg,
-                   help="extra environment variable for VisoMaster (repeatable)")
+    p.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        type=_env_arg,
+        help="extra environment variable for VisoMaster (repeatable)",
+    )
     sub.add_parser("mcp", help="MCP server (stdio)")
     return ap
 
@@ -686,8 +913,12 @@ def _loaded(res: dict, wait: bool, count_key: str) -> dict:
 
 def _import_args(a) -> dict:
     return {
-        "path": _abs(a.path), "faces": a.faces, "no_control": a.no_control,
-        "no_params": a.no_params, "source_face": a.source_face, "missing": a.missing,
+        "path": _abs(a.path),
+        "faces": a.faces,
+        "no_control": a.no_control,
+        "no_params": a.no_params,
+        "source_face": a.source_face,
+        "missing": a.missing,
     }
 
 
@@ -700,7 +931,14 @@ def run_cli(a):
     if c == "get-config":
         return call("get_config", {"face_id": a.face_id, "keys": a.keys})
     if c == "export-config":
-        return call("export_config", {"path": _abs(a.path), "face_id": a.face_id, "include_personal": a.include_personal})
+        return call(
+            "export_config",
+            {
+                "path": _abs(a.path),
+                "face_id": a.face_id,
+                "include_personal": a.include_personal,
+            },
+        )
     if c == "diff":
         return call("diff", _import_args(a))
     if c == "apply-config":
@@ -708,7 +946,10 @@ def run_cli(a):
     if c == "save-backup":
         return call("save_backup", {"name": a.name})
     if c == "press-parameter-button":
-        return call("press_parameter_button", {"key": a.key, "label": a.label, "confirm": a.confirm})
+        return call(
+            "press_parameter_button",
+            {"key": a.key, "label": a.label, "confirm": a.confirm},
+        )
     if c == "list-backups":
         return call("list_backups")
     if c == "restore-backup":
@@ -716,26 +957,41 @@ def run_cli(a):
     if c == "set":
         value = _parse_value(a.value)
         if a.key.endswith("Folder") and value and not Path(value).is_absolute():
-            value = _abs(value)  # relative to the folder the command is typed in, not VisoMaster's
+            value = _abs(
+                value
+            )  # relative to the folder the command is typed in, not VisoMaster's
         return call("set", {"key": a.key, "value": value, "face_id": a.face_id})
     if c == "schema":
         return call("schema", {"key": a.key, "group": a.group})
     if c == "snapshot":
         out = _snapshot_path(a.path, Path.cwd())
-        res = call("snapshot", {"path": out, "view": a.view, "include_data": False, "save": out is None})
+        res = call(
+            "snapshot",
+            {"path": out, "view": a.view, "include_data": False, "save": out is None},
+        )
         return res
     if c == "list-actions":
         return call("list_actions", {"include_disabled": not a.enabled_only})
     if c == "run-action":  # batches wait until VisoMaster is idle, like start-recording
-        return call_when_ready("run_action", {"name": a.name, "confirm": a.confirm}, _print_ready)
+        return call_when_ready(
+            "run_action", {"name": a.name, "confirm": a.confirm}, _print_ready
+        )
     if c == "load-workspace":
         return call("load_workspace", {"path": _abs(a.path)})
     if c == "save-workspace":
         return call("save_workspace", {"path": _abs(a.path)})
     if c == "load-target-media":
-        return _loaded(call("load_target_media", {"path": [_abs(p) for p in a.paths]}), a.wait, "target_media")
+        return _loaded(
+            call("load_target_media", {"path": [_abs(p) for p in a.paths]}),
+            a.wait,
+            "target_media",
+        )
     if c == "load-input-faces":
-        return _loaded(call("load_input_faces", {"path": [_abs(p) for p in a.paths]}), a.wait, "input_faces")
+        return _loaded(
+            call("load_input_faces", {"path": [_abs(p) for p in a.paths]}),
+            a.wait,
+            "input_faces",
+        )
     if c == "select-target-media":
         return call("select_target_media", {"name": a.name})
     if c == "select-target-face":
@@ -744,9 +1000,17 @@ def run_cli(a):
         return call("list_tensorrt_models", {"only": a.only})
     if c == "build-tensorrt-cache":
         sel = a.models
-        keywords = (["active"], ["all"], ["missing"], ["failed"])  # sent as a string, like the MCP does
+        keywords = (
+            ["active"],
+            ["all"],
+            ["missing"],
+            ["failed"],
+        )  # sent as a string, like the MCP does
         models = "active" if not sel else (sel[0] if sel in keywords else sel)
-        return call("build_tensorrt_cache", {"models": models, "rebuild": a.rebuild, "confirm": a.confirm})
+        return call(
+            "build_tensorrt_cache",
+            {"models": models, "rebuild": a.rebuild, "confirm": a.confirm},
+        )
     if c == "tensorrt-build-status":
         return call("tensorrt_build_status", {"detail": a.detail})
     if c == "tensorrt-wait":
@@ -778,11 +1042,21 @@ def run_cli(a):
 
         return wait_recording(a.max_wait, a.interval, show_rec)
     if c == "select-input-face":
-        return call("select_input_face", {"name": a.name, "face_id": a.face_id, "selected": not a.unselect})
+        return call(
+            "select_input_face",
+            {"name": a.name, "face_id": a.face_id, "selected": not a.unselect},
+        )
     if c == "list-embeddings":
         return call("list_embeddings")
     if c == "select-embedding":
-        return call("select_embedding", {"embedding": a.embedding, "face_id": a.face_id, "selected": not a.unselect})
+        return call(
+            "select_embedding",
+            {
+                "embedding": a.embedding,
+                "face_id": a.face_id,
+                "selected": not a.unselect,
+            },
+        )
     if c == "start-recording":
         return start_recording_when_ready(a.from_start, on_progress=_print_ready)
     if c == "stop-recording":
@@ -792,25 +1066,38 @@ def run_cli(a):
     if c == "process-jobs":
         return call("process_jobs", {"jobs": a.jobs or None})
     if c == "batch-input-faces":
-        return call_when_ready("batch_input_faces", {"input_faces": a.input_faces or None, "face_id": a.face_id},
-                               _print_ready)
+        return call_when_ready(
+            "batch_input_faces",
+            {"input_faces": a.input_faces or None, "face_id": a.face_id},
+            _print_ready,
+        )
     if c == "quit":
         return quit_visomaster(not a.no_save)
     if c == "launch":
         return launch(a.hidden, a.port, on_progress=_print_ready, env=dict(a.env))
     if c == "apply-offline":
         return apply_offline(
-            _abs(a.path), _abs(a.workspace), a.faces, a.no_control, a.no_params,
-            a.source_face, a.missing, a.dry_run, a.force,
+            _abs(a.path),
+            _abs(a.workspace),
+            a.faces,
+            a.no_control,
+            a.no_params,
+            a.source_face,
+            a.missing,
+            a.dry_run,
+            a.force,
         )
     if c == "api":
         if a.port:
             write_config(a.port)
         rt = read_runtime()
-        return {"config": read_config(), "running": bool(rt and _port_open(rt.get("port", 0))),
-                "runtime_file": str(RUNTIME_PATH),
-                "launcher_checkbox": "unticked each time the launcher starts: tick it to start VisoMaster with "
-                                     "the API (vmf-cli launch does it without the launcher)"}
+        return {
+            "config": read_config(),
+            "running": bool(rt and _port_open(rt.get("port", 0))),
+            "runtime_file": str(RUNTIME_PATH),
+            "launcher_checkbox": "unticked each time the launcher starts: tick it to start VisoMaster with "
+            "the API (vmf-cli launch does it without the launcher)",
+        }
     raise ApiError(f"unknown command: {c}")
 
 
@@ -880,7 +1167,9 @@ def build_mcp():
             return call(_command, kw)
         except ApiError as e:
             raise ToolError(str(e)) from None
-        except Exception as e:  # never let the SDK hide the reason behind "Error executing tool"
+        except (
+            Exception
+        ) as e:  # never let the SDK hide the reason behind "Error executing tool"
             raise ToolError(f"{type(e).__name__}: {e}") from None
 
     def _path(p):
@@ -902,38 +1191,82 @@ def build_mcp():
         return _call("get_config", face_id=face_id, keys=keys)
 
     @mcp.tool()
-    def export_config(path: str | None = None, face_id: str | None = None, include_personal: bool = False) -> dict:
+    def export_config(
+        path: str | None = None,
+        face_id: str | None = None,
+        include_personal: bool = False,
+    ) -> dict:
         """Export the config in preset format {parameters, control}, without personal keys (include_personal=true:
         with them, e.g. paths and GPU settings). path: a .json file outside VisoMaster's and vmf_api's folders
         (default: vmf_api/exports); an existing file is copied to backups/overwritten first."""
-        return _call("export_config", path=_path(path), face_id=face_id, include_personal=include_personal)
+        return _call(
+            "export_config",
+            path=_path(path),
+            face_id=face_id,
+            include_personal=include_personal,
+        )
 
     @mcp.tool()
-    def diff(path: str | None = None, config: dict | None = None, faces: str = "selected", no_control: bool = False,
-             no_params: bool = False, source_face: str | None = None, missing: str = "keep") -> dict:
+    def diff(
+        path: str | None = None,
+        config: dict | None = None,
+        faces: str = "selected",
+        no_control: bool = False,
+        no_params: bool = False,
+        source_face: str | None = None,
+        missing: str = "keep",
+    ) -> dict:
         """What importing a config (preset or last_workspace.json) would change: changed, excluded (personal),
         unknown (obsolete), invalid, missing. Either path (a .json file) or config (the JSON object itself,
         e.g. {"parameters": {...}, "control": {...}}: no file to write). faces: all | selected | <face_id>."""
-        return _call("diff", path=_path(path), config=config, faces=faces, no_control=no_control,
-                     no_params=no_params, source_face=source_face, missing=missing)
+        return _call(
+            "diff",
+            path=_path(path),
+            config=config,
+            faces=faces,
+            no_control=no_control,
+            no_params=no_params,
+            source_face=source_face,
+            missing=missing,
+        )
 
     @mcp.tool()
-    def apply_config(path: str | None = None, config: dict | None = None, faces: str = "selected",
-                     no_control: bool = False, no_params: bool = False, source_face: str | None = None,
-                     missing: str = "keep", dry_run: bool = False) -> dict:
+    def apply_config(
+        path: str | None = None,
+        config: dict | None = None,
+        faces: str = "selected",
+        no_control: bool = False,
+        no_params: bool = False,
+        source_face: str | None = None,
+        missing: str = "keep",
+        dry_run: bool = False,
+    ) -> dict:
         """Import someone else's preset/workspace without overwriting personal settings: path (a .json file)
         or config (the JSON object itself, as for diff). Automatic backup first (restore_backup to undo)."""
-        return _call("apply_config", path=_path(path), config=config, faces=faces, no_control=no_control,
-                     no_params=no_params, source_face=source_face, missing=missing, dry_run=dry_run)
+        return _call(
+            "apply_config",
+            path=_path(path),
+            config=config,
+            faces=faces,
+            no_control=no_control,
+            no_params=no_params,
+            source_face=source_face,
+            missing=missing,
+            dry_run=dry_run,
+        )
 
     @mcp.tool()
     def list_backups() -> dict:
         """Available backups (most recent first)."""
-        names = _call("list_backups")  # an empty list would reach the model as no content at all
+        names = _call(
+            "list_backups"
+        )  # an empty list would reach the model as no content at all
         return {"backups": names, "count": len(names)}
 
     @mcp.tool()
-    def press_parameter_button(key: str, label: str | None = None, confirm: str | None = None) -> dict:
+    def press_parameter_button(
+        key: str, label: str | None = None, confirm: str | None = None
+    ) -> dict:
         """Click a button attached to a setting, listed in schema as "buttons" (e.g. "Apply" of Face
         Re-Aging's Target Age: VisoMaster only uses new ages after it). Exactly like a click in the UI;
         the setting's depends_on conditions must be met. A reset button returns confirmation_required with
@@ -953,7 +1286,9 @@ def build_mcp():
         return _call("restore_backup", name=name)
 
     @mcp.tool()
-    def set_value(key: str, value: str | int | float | bool, face_id: str | None = None) -> dict:
+    def set_value(
+        key: str, value: str | int | float | bool, face_id: str | None = None
+    ) -> dict:
         """Set one key (control or face parameter), validated against the schema (type, bounds, options).
         Applied like a change in VisoMaster's UI (widget + its function, e.g. model loading); a text field
         is committed as if Enter was pressed. If schema shows "buttons" for the key (e.g. Apply), call
@@ -975,7 +1310,9 @@ def build_mcp():
         return _call("schema", key=key, group=group)
 
     @mcp.tool()
-    def snapshot(view: bool = False, path: str | None = None, include_image: bool = True):
+    def snapshot(
+        view: bool = False, path: str | None = None, include_image: bool = True
+    ):
         """PNG capture of the preview (processed frame; view=true: the view as displayed).
         include_image=false: only source / width / height / size (and path if given), no image returned."""
         res = _call("snapshot", view=view, path=_path(path), include_data=include_image)
@@ -1000,7 +1337,9 @@ def build_mcp():
         import asyncio
 
         try:
-            return await asyncio.to_thread(call_when_ready, "run_action", {"name": name, "confirm": confirm})
+            return await asyncio.to_thread(
+                call_when_ready, "run_action", {"name": name, "confirm": confirm}
+            )
         except ApiError as e:
             raise ToolError(str(e)) from None
 
@@ -1044,8 +1383,11 @@ def build_mcp():
         return _call("list_tensorrt_models", only=only)
 
     @mcp.tool()
-    def build_tensorrt_cache(models: list[str] | str = "active", rebuild: bool = False,
-                             confirm: str | None = None) -> dict:
+    def build_tensorrt_cache(
+        models: list[str] | str = "active",
+        rebuild: bool = False,
+        confirm: str | None = None,
+    ) -> dict:
         """Build missing TensorRT engines, as on a model's first activation (several minutes each).
         models: list of names, "active", "all" or "failed". An existing engine is never recompiled, except
         with rebuild=true (e.g. after an NVIDIA driver update): the 1st call returns a WARNING and a code,
@@ -1053,7 +1395,9 @@ def build_mcp():
         Models already known to be lazy (dynamic input shape) are skipped and listed in lazy_known: they cannot
         be pre-built, VisoMaster compiles them on first real use (rebuild=true probes them again).
         TensorRT must be the active provider. Asynchronous: use wait_tensorrt_build."""
-        return _call("build_tensorrt_cache", models=models, rebuild=rebuild, confirm=confirm)
+        return _call(
+            "build_tensorrt_cache", models=models, rebuild=rebuild, confirm=confirm
+        )
 
     @mcp.tool()
     def tensorrt_build_status(detail: bool = False) -> dict:
@@ -1062,7 +1406,9 @@ def build_mcp():
         return _call("tensorrt_build_status", detail=detail)
 
     @mcp.tool()
-    async def wait_tensorrt_build(ctx: Context, max_wait_s: int = 600, detail: bool = False) -> dict:
+    async def wait_tensorrt_build(
+        ctx: Context, max_wait_s: int = 600, detail: bool = False
+    ) -> dict:
         """Wait for the TensorRT build to finish and return the final status. Its "summary" lists, per model,
         success (built / lazy) or failure (with the error) and build_time_s, plus total_build_time_s. Sends progress notifications while waiting. After max_wait_s, returns the current status
         (the build goes on): call again to keep waiting. detail=true lists every model."""
@@ -1072,14 +1418,22 @@ def build_mcp():
         sent: dict = {}
         while True:
             try:
-                st = await asyncio.to_thread(poll, "tensorrt_build_status", {"detail": detail})
+                st = await asyncio.to_thread(
+                    poll, "tensorrt_build_status", {"detail": detail}
+                )
             except ApiError as e:
                 raise ToolError(str(e)) from None
             c = st.get("counts") or {}
             done = sum(c.get(k, 0) for k in ("built", "lazy", "failed", "skipped"))
             # "done/total" from the server: items only lists running / failed models unless detail=true
             total = str(st.get("progress") or "").partition("/")[2]
-            await _progress(ctx, sent, done, int(total) if total.isdigit() else None, _trt_progress_line(st))
+            await _progress(
+                ctx,
+                sent,
+                done,
+                int(total) if total.isdigit() else None,
+                _trt_progress_line(st),
+            )
             if not st.get("running"):
                 st["wait"] = "finished"
                 return st
@@ -1100,7 +1454,9 @@ def build_mcp():
         return _call("list_embeddings")
 
     @mcp.tool()
-    def select_input_face(name: str | None = None, face_id: str | None = None, selected: bool = True) -> dict:
+    def select_input_face(
+        name: str | None = None, face_id: str | None = None, selected: bool = True
+    ) -> dict:
         """Assign a loaded input face (file name or id, see load_input_faces) to a target face (default:
         selected face), like a click on its card: it becomes the face's only input face. selected=false:
         remove it. No name: list the input faces and where they are assigned. Some features need an
@@ -1108,10 +1464,14 @@ def build_mcp():
         return _call("select_input_face", name=name, face_id=face_id, selected=selected)
 
     @mcp.tool()
-    def select_embedding(embedding: str, face_id: str | None = None, selected: bool = True) -> dict:
+    def select_embedding(
+        embedding: str, face_id: str | None = None, selected: bool = True
+    ) -> dict:
         """Choose the embedding (id or exact name) used for a target face's swap (default: selected
         face), like a click in VisoMaster. selected=false: remove it from the face."""
-        return _call("select_embedding", embedding=embedding, face_id=face_id, selected=selected)
+        return _call(
+            "select_embedding", embedding=embedding, face_id=face_id, selected=selected
+        )
 
     @mcp.tool()
     async def start_recording(ctx: Context, from_start: bool = False) -> dict:
@@ -1146,7 +1506,9 @@ def build_mcp():
                 raise ToolError(str(e)) from None
             now = time.time()
             since = (since or now) if st.get("ready") else None
-            await _progress(ctx, sent, round(now - t_start, 1), None, _ready_line(st))  # seconds waited
+            await _progress(
+                ctx, sent, round(now - t_start, 1), None, _ready_line(st)
+            )  # seconds waited
             if since is not None and now - since >= 2.0:
                 st["wait"] = "ready"
                 return st
@@ -1186,19 +1548,31 @@ def build_mcp():
             except ApiError as e:
                 raise ToolError(str(e)) from None
             p = rec.get("progress") or {}
-            await _progress(ctx, sent, p.get("frames_written", 0), p.get("total_frames"), _rec_progress_line(rec))
+            await _progress(
+                ctx,
+                sent,
+                p.get("frames_written", 0),
+                p.get("total_frames"),
+                _rec_progress_line(rec),
+            )
             if not rec.get("active"):
-                rec["wait"] = "finished" if rec.get("result") else "no recording in progress"
+                rec["wait"] = (
+                    "finished" if rec.get("result") else "no recording in progress"
+                )
                 return rec
             if time.time() >= deadline:
-                rec["wait"] = f"still recording after {max_wait_s} s (the recording goes on)"
+                rec["wait"] = (
+                    f"still recording after {max_wait_s} s (the recording goes on)"
+                )
                 return rec
             await asyncio.sleep(5)
 
     @mcp.tool()
     def list_jobs() -> dict:
         """Saved jobs."""
-        jobs = _call("list_jobs")  # an empty list would reach the model as no content at all
+        jobs = _call(
+            "list_jobs"
+        )  # an empty list would reach the model as no content at all
         return {"jobs": jobs, "count": len(jobs)}
 
     @mcp.tool()
@@ -1207,7 +1581,9 @@ def build_mcp():
         return _call("process_jobs", jobs=jobs)
 
     @mcp.tool()
-    async def batch_input_faces(input_faces: list[str] | None = None, face_id: str | None = None) -> dict:
+    async def batch_input_faces(
+        input_faces: list[str] | None = None, face_id: str | None = None
+    ) -> dict:
         """Swap the current frame (image, or video frame at the playhead) once per loaded input face (all, or
         the listed file names / ids), each one alone on the target face (default: selected face), and save
         each result to OutputMediaFolder as <media>__<input face>.png (.jpg with ImageFormatToggle), like
@@ -1218,8 +1594,11 @@ def build_mcp():
         import asyncio
 
         try:
-            return await asyncio.to_thread(call_when_ready, "batch_input_faces",
-                                           {"input_faces": input_faces, "face_id": face_id})
+            return await asyncio.to_thread(
+                call_when_ready,
+                "batch_input_faces",
+                {"input_faces": input_faces, "face_id": face_id},
+            )
         except ApiError as e:
             raise ToolError(str(e)) from None
 
@@ -1235,7 +1614,9 @@ def build_mcp():
             raise ToolError(str(e)) from None
 
     @mcp.tool()
-    async def launch_visomaster(hidden: bool = False, env: dict[str, str] | None = None) -> dict:
+    async def launch_visomaster(
+        hidden: bool = False, env: dict[str, str] | None = None
+    ) -> dict:
         """Start VisoMaster with the API and wait until it is ready (models loaded, idle). hidden=true:
         no window at all; everything still works through these tools (a dialog VisoMaster would open
         is invisible then). env: extra environment variables for VisoMaster's process, only for this run
@@ -1249,14 +1630,31 @@ def build_mcp():
             raise ToolError(str(e)) from None
 
     @mcp.tool(name="apply_offline")
-    def apply_offline_tool(path: str, workspace: str | None = None, faces: str = "selected", no_control: bool = False,
-                      no_params: bool = False, source_face: str | None = None, missing: str = "keep",
-                      dry_run: bool = False, force: bool = False) -> dict:
+    def apply_offline_tool(
+        path: str,
+        workspace: str | None = None,
+        faces: str = "selected",
+        no_control: bool = False,
+        no_params: bool = False,
+        source_face: str | None = None,
+        missing: str = "keep",
+        dry_run: bool = False,
+        force: bool = False,
+    ) -> dict:
         """VisoMaster CLOSED: same merge directly into last_workspace.json (backup vmf_api/backups/last_workspace.json.bak-<date>).
         force=true only if VisoMaster is really closed but its process could not be checked."""
         try:
-            return apply_offline(_abs(path), _abs(workspace), faces, no_control, no_params, source_face, missing,
-                                 dry_run, force)
+            return apply_offline(
+                _abs(path),
+                _abs(workspace),
+                faces,
+                no_control,
+                no_params,
+                source_face,
+                missing,
+                dry_run,
+                force,
+            )
         except (ApiError, ValueError, OSError) as e:
             raise ToolError(str(e)) from None
 
@@ -1277,13 +1675,34 @@ def main(argv=None):
     try:
         res = run_cli(a)
     except ApiError as e:
-        print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False, indent=None if a.compact else 2))
+        print(
+            json.dumps(
+                {"ok": False, "error": str(e)},
+                ensure_ascii=False,
+                indent=None if a.compact else 2,
+            )
+        )
         return 1
     except Exception as e:  # stdout stays one JSON document, whatever went wrong
-        print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"ok": False, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False
+            )
+        )
         return 1
-    print(json.dumps({"ok": True, "result": res}, ensure_ascii=False, indent=None if a.compact else 2, default=str))
-    if a.cmd in ("quit", "launch") and isinstance(res, dict) and (res.get("closed") is False or res.get("ready") is False):
+    print(
+        json.dumps(
+            {"ok": True, "result": res},
+            ensure_ascii=False,
+            indent=None if a.compact else 2,
+            default=str,
+        )
+    )
+    if (
+        a.cmd in ("quit", "launch")
+        and isinstance(res, dict)
+        and (res.get("closed") is False or res.get("ready") is False)
+    ):
         return 4  # quit: still running after the wait; launch: started but not idle yet
     # Exit codes for scripts: 0 done, 1 refused / error, 2 bad command line (argparse),
     # 3 nothing done yet: confirmation code needed, 4 a *-wait (or --wait) gave up before the end.
@@ -1292,9 +1711,15 @@ def main(argv=None):
             return 3
         if str(res.get("wait", "")).startswith("still"):
             return 4
-        if a.cmd == "recording-wait" and (res.get("result") or {}).get("state") == "failed":
+        if (
+            a.cmd == "recording-wait"
+            and (res.get("result") or {}).get("state") == "failed"
+        ):
             return 1  # ended without a video file
-        if a.cmd == "tensorrt-wait" and (res.get("summary") or {}).get("success") is False:
+        if (
+            a.cmd == "tensorrt-wait"
+            and (res.get("summary") or {}).get("success") is False
+        ):
             return 1  # at least one model failed to build
     return 0
 

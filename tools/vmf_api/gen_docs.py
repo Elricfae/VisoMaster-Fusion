@@ -28,19 +28,30 @@ def _norm(name: str) -> str:
 def http_section() -> list[str]:
     import commands
 
-    out = ["## HTTP commands", "",
-           "`POST /api/<name>` with a JSON object of the arguments. "
-           "**write**: refused while VisoMaster is busy (recording, batch, issue scan, job queue, TensorRT build). "
-           "**thread**: `main` = run on the Qt main thread (queued), `http` = plain read run in the HTTP thread "
-           "(safe to poll during a recording). **timeout**: seconds the HTTP thread waits for the main thread.", "",
-           "| Command | Arguments | write | thread | timeout | Description |", "|---|---|---|---|---|---|"]
+    out = [
+        "## HTTP commands",
+        "",
+        "`POST /api/<name>` with a JSON object of the arguments. "
+        "**write**: refused while VisoMaster is busy (recording, batch, issue scan, job queue, TensorRT build). "
+        "**thread**: `main` = run on the Qt main thread (queued), `http` = plain read run in the HTTP thread "
+        "(safe to poll during a recording). **timeout**: seconds the HTTP thread waits for the main thread.",
+        "",
+        "| Command | Arguments | write | thread | timeout | Description |",
+        "|---|---|---|---|---|---|",
+    ]
     for name in sorted(commands.COMMANDS):
         c = commands.COMMANDS[name]
         params = list(inspect.signature(c.fn).parameters.values())[1:]  # skip ctx
         args = ", ".join(
-            f"`{p.name}`" if p.default is inspect.Parameter.empty else f"`{p.name}={p.default!r}`" for p in params)
-        out.append(f"| `{name}` | {args or '-'} | {'yes' if c.write else ''} | "
-                   f"{'main' if c.main_thread else 'http'} | {c.timeout:g} | {_cell(c.help)} |")
+            f"`{p.name}`"
+            if p.default is inspect.Parameter.empty
+            else f"`{p.name}={p.default!r}`"
+            for p in params
+        )
+        out.append(
+            f"| `{name}` | {args or '-'} | {'yes' if c.write else ''} | "
+            f"{'main' if c.main_thread else 'http'} | {c.timeout:g} | {_cell(c.help)} |"
+        )
     return out
 
 
@@ -51,9 +62,13 @@ def _cli_args(p: argparse.ArgumentParser) -> str:
             continue
         if a.option_strings:
             opt = "/".join(a.option_strings)
-            parts.append(f"`{opt}`" if a.nargs == 0 else f"`{opt} {a.metavar or a.dest.upper()}`")
+            parts.append(
+                f"`{opt}`" if a.nargs == 0 else f"`{opt} {a.metavar or a.dest.upper()}`"
+            )
         else:
-            parts.append(f"`{a.metavar or a.dest}`" + ("…" if a.nargs in ("*", "+") else ""))
+            parts.append(
+                f"`{a.metavar or a.dest}`" + ("…" if a.nargs in ("*", "+") else "")
+            )
     return " ".join(parts)
 
 
@@ -64,23 +79,34 @@ def cli_section() -> list[str]:
     ap = vmf_cli.build_parser()
     sub = next(a for a in ap._actions if isinstance(a, argparse._SubParsersAction))
     helps = {c.dest: c.help for c in sub._choices_actions}
-    out = ["## CLI subcommands", "",
-           "`vmf-cli [--compact] <subcommand> …` (`vmf-cli.bat`, or `.venv\\Scripts\\python.exe vmf_cli.py`). "
-           "**HTTP**: the command it sends; `client` = runs in the CLI itself (launch, waits, offline merge…).", "",
-           "| Subcommand | Arguments | HTTP | Description |", "|---|---|---|---|"]
+    out = [
+        "## CLI subcommands",
+        "",
+        "`vmf-cli [--compact] <subcommand> …` (`vmf-cli.bat`, or `.venv\\Scripts\\python.exe vmf_cli.py`). "
+        "**HTTP**: the command it sends; `client` = runs in the CLI itself (launch, waits, offline merge…).",
+        "",
+        "| Subcommand | Arguments | HTTP | Description |",
+        "|---|---|---|---|",
+    ]
     for name, p in sub.choices.items():
         http = _norm(name) if _norm(name) in commands.COMMANDS else "client"
         desc = helps.get(name) or p.description or ""
-        if not desc and http != "client":  # same as the HTTP command: its first sentence
+        if (
+            not desc and http != "client"
+        ):  # same as the HTTP command: its first sentence
             desc = commands.COMMANDS[http].help.split("\n\n")[0].split(". ")[0]
-        out.append(f"| `{name}` | {_cli_args(p) or '-'} | {'`' + http + '`' if http != 'client' else http} | "
-                   f"{_cell(desc)} |")
+        out.append(
+            f"| `{name}` | {_cli_args(p) or '-'} | {'`' + http + '`' if http != 'client' else http} | "
+            f"{_cell(desc)} |"
+        )
     return out
 
 
 def _schema(tool) -> dict:
     # mcp 1.x: inputSchema, mcp 2.x: input_schema
-    return getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
+    return (
+        getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None) or {}
+    )
 
 
 def mcp_section() -> list[str]:
@@ -88,25 +114,43 @@ def mcp_section() -> list[str]:
     import vmf_cli
 
     tools = asyncio.run(vmf_cli.build_mcp().list_tools())
-    out = ["## MCP tools", "",
-           "Served over stdio by `vmf_cli.py mcp`. **HTTP**: the command the tool sends; `client` = runs in the "
-           "MCP process (launch, waits with progress notifications, offline merge).", "",
-           "| Tool | Arguments | HTTP | Description |", "|---|---|---|---|"]
+    out = [
+        "## MCP tools",
+        "",
+        "Served over stdio by `vmf_cli.py mcp`. **HTTP**: the command the tool sends; `client` = runs in the "
+        "MCP process (launch, waits with progress notifications, offline merge).",
+        "",
+        "| Tool | Arguments | HTTP | Description |",
+        "|---|---|---|---|",
+    ]
     for t in sorted(tools, key=lambda t: t.name):
         props = _schema(t).get("properties", {})
         required = set(_schema(t).get("required", []))
         args = ", ".join(f"`{k}`" if k in required else f"`{k}?`" for k in props)
-        http = t.name if t.name in commands.COMMANDS else {"set_value": "set", "launch_visomaster": "client",
-                                                           "quit_visomaster": "quit"}.get(t.name, "client")
-        out.append(f"| `{t.name}` | {args or '-'} | {'`' + http + '`' if http != 'client' else http} | "
-                   f"{_cell(t.description)} |")
+        http = (
+            t.name
+            if t.name in commands.COMMANDS
+            else {
+                "set_value": "set",
+                "launch_visomaster": "client",
+                "quit_visomaster": "quit",
+            }.get(t.name, "client")
+        )
+        out.append(
+            f"| `{t.name}` | {args or '-'} | {'`' + http + '`' if http != 'client' else http} | "
+            f"{_cell(t.description)} |"
+        )
     return out
 
 
 def render() -> str:
-    lines = ["# vmf_api reference", "",
-             "Generated by `gen_docs.py` from the code: do not edit by hand. "
-             "Guides: [API.md](API.md), [CLI.md](CLI.md), [MCP.md](MCP.md), [DEVELOPING.md](DEVELOPING.md).", ""]
+    lines = [
+        "# vmf_api reference",
+        "",
+        "Generated by `gen_docs.py` from the code: do not edit by hand. "
+        "Guides: [API.md](API.md), [CLI.md](CLI.md), [MCP.md](MCP.md), [DEVELOPING.md](DEVELOPING.md).",
+        "",
+    ]
     for section in (http_section, cli_section, mcp_section):
         lines += section() + [""]
     return "\n".join(lines)

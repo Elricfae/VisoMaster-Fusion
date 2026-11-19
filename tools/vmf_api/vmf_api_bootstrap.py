@@ -57,7 +57,9 @@ def _detect():
         os.path.join(folder, "app", "ui", "launcher", "launcher_window.py")
     ):
         return "launcher"
-    if name == "main.py" and os.path.isfile(os.path.join(folder, "app", "ui", "main_ui.py")):
+    if name == "main.py" and os.path.isfile(
+        os.path.join(folder, "app", "ui", "main_ui.py")
+    ):
         if os.environ.get("VMF_API") == "1":
             return "app"
     return None

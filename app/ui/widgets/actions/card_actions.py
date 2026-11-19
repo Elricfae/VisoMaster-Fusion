@@ -171,7 +171,9 @@ def uncheck_all_input_faces(main_window: "MainWindow"):
 
 
 def uncheck_all_merged_embeddings(main_window: "MainWindow"):
-    for embed_button in list_view_actions.get_all_merged_embeddings(main_window).values():
+    for embed_button in list_view_actions.get_all_merged_embeddings(
+        main_window
+    ).values():
         embed_button.setChecked(False)
 
     # Force Garbage Collection for dangling merged tensors
@@ -181,9 +183,7 @@ def uncheck_all_merged_embeddings(main_window: "MainWindow"):
         torch.cuda.empty_cache()
 
 
-def find_target_faces(
-    main_window: "MainWindow", clear_removed_faces: bool = False
-):
+def find_target_faces(main_window: "MainWindow", clear_removed_faces: bool = False):
     from app.ui.widgets.actions import video_control_actions
 
     if video_control_actions.block_if_issue_scan_active(main_window, "find faces"):
@@ -285,9 +285,9 @@ def find_target_faces(
                 faces_list.append([face_kps, face_emb, cropped_img, img])
 
             if faces_list:
-                removed_embeddings = getattr(
-                    main_window, "_removed_target_face_embeddings", []
-                ) or []
+                removed_embeddings = (
+                    getattr(main_window, "_removed_target_face_embeddings", []) or []
+                )
 
                 # Loop through all faces in video frame
                 for face in faces_list:
@@ -306,9 +306,12 @@ def find_target_faces(
                     # Skip faces the user removed until Find Faces is pressed again
                     if not found and removed_embeddings:
                         for removed_emb in removed_embeddings:
-                            if main_window.function_worker.findCosineDistance(
-                                removed_emb, face[1]
-                            ) >= 0.6:
+                            if (
+                                main_window.function_worker.findCosineDistance(
+                                    removed_emb, face[1]
+                                )
+                                >= 0.6
+                            ):
                                 found = True
                                 break
 

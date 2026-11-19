@@ -68,9 +68,7 @@ STAGE_DEFINITIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Build complete",
-        (
-            "load successful",
-        ),
+        ("load successful",),
     ),
 )
 

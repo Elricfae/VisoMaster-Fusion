@@ -29,23 +29,44 @@ def disable_power_throttling(pid: int | None = None) -> dict:
         from ctypes import wintypes
 
         class _State(ctypes.Structure):
-            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+            _fields_ = [
+                ("Version", wintypes.ULONG),
+                ("ControlMask", wintypes.ULONG),
+                ("StateMask", wintypes.ULONG),
+            ]
 
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.OpenProcess.restype = wintypes.HANDLE
         k32.GetCurrentProcess.restype = wintypes.HANDLE
         own = pid is None or pid == os.getpid()
-        h = k32.GetCurrentProcess() if own else k32.OpenProcess(
-            _PROCESS_SET_INFORMATION | _PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        h = (
+            k32.GetCurrentProcess()
+            if own
+            else k32.OpenProcess(
+                _PROCESS_SET_INFORMATION | _PROCESS_QUERY_LIMITED_INFORMATION,
+                False,
+                int(pid),
+            )
+        )
         if not h:
-            return {"applied": False, "reason": f"OpenProcess failed (error {ctypes.get_last_error()})"}
+            return {
+                "applied": False,
+                "reason": f"OpenProcess failed (error {ctypes.get_last_error()})",
+            }
         try:
             mask = _EXECUTION_SPEED | _IGNORE_TIMER_RESOLUTION
             state = _State(1, mask, 0)
-            ok = k32.SetProcessInformation(wintypes.HANDLE(h), _PROCESS_POWER_THROTTLING,
-                                           ctypes.byref(state), ctypes.sizeof(state))
+            ok = k32.SetProcessInformation(
+                wintypes.HANDLE(h),
+                _PROCESS_POWER_THROTTLING,
+                ctypes.byref(state),
+                ctypes.sizeof(state),
+            )
             if not ok:
-                return {"applied": False, "reason": f"SetProcessInformation failed (error {ctypes.get_last_error()})"}
+                return {
+                    "applied": False,
+                    "reason": f"SetProcessInformation failed (error {ctypes.get_last_error()})",
+                }
             return {"applied": True, "pid": pid or os.getpid()}
         finally:
             if not own:

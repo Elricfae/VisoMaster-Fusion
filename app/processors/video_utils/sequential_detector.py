@@ -1,10 +1,12 @@
 from typing import Dict, List, Any, Optional, Tuple, cast
 from collections.abc import Mapping
 
+import cv2
 import numpy
 import torch
 
 from app.helpers.miscellaneous import find_best_target_match
+from app.processors.utils import faceutil
 
 
 class SequentialDetector:
@@ -168,19 +170,71 @@ class SequentialDetector:
                 numpy.empty((0, 203, 2), dtype=numpy.float32),
             )
 
-        if frame_tensor is None:
-            frame_tensor = (
-                torch.from_numpy(frame_rgb)
+        detect_mode = control.get("DetectorModelSelection", "RetinaFace")
+        target_det_side = (
+            640
+            if (
+                (use_landmark and landmark_mode == "hrffa")
+                or detect_mode not in ("RetinaFace", "SCRFD")
+            )
+            else 512
+        )
+
+        # Avoid uploading full HD/4K frames to GPU just to downscale for detection.
+        # When frame_tensor is not pre-supplied and the frame exceeds detector input size,
+        # downscale a small copy on CPU for detection and upload only tight face ROIs for
+        # ArcFace recognition and dense landmarking.
+        use_cpu_roi_detection = (
+            frame_tensor is None
+            and isinstance(frame_rgb, numpy.ndarray)
+            and frame_rgb.ndim == 3
+            and max(int(frame_rgb.shape[0]), int(frame_rgb.shape[1])) > target_det_side
+        )
+        det_scale_x = 1.0
+        det_scale_y = 1.0
+        det_tensor: Optional[torch.Tensor] = None
+
+        if use_cpu_roi_detection:
+            orig_h, orig_w = int(frame_rgb.shape[0]), int(frame_rgb.shape[1])
+            pre_scale = target_det_side / float(max(orig_h, orig_w))
+            det_w = max(1, int(round(orig_w * pre_scale)))
+            det_h = max(1, int(round(orig_h * pre_scale)))
+            det_scale_x = det_w / float(orig_w)
+            det_scale_y = det_h / float(orig_h)
+            det_rgb = cv2.resize(
+                frame_rgb, (det_w, det_h), interpolation=cv2.INTER_AREA
+            )
+            det_tensor = (
+                torch.from_numpy(numpy.ascontiguousarray(det_rgb))
                 .to(device, non_blocking=True)
-                .permute(2, 0, 1)  # Convert [H, W, C] -> [C, H, W]
+                .permute(2, 0, 1)
+                .contiguous()
+            )
+            detect_input_tensor = det_tensor
+        else:
+            if frame_tensor is None:
+                frame_tensor = (
+                    torch.from_numpy(frame_rgb)
+                    .to(device, non_blocking=True)
+                    .permute(2, 0, 1)  # Convert [H, W, C] -> [C, H, W]
+                )
+            detect_input_tensor = frame_tensor
+
+        def _upload_face_roi(rx1: int, ry1: int, rx2: int, ry2: int) -> torch.Tensor:
+            roi_np = numpy.ascontiguousarray(frame_rgb[ry1:ry2, rx1:rx2])
+            return (
+                torch.from_numpy(roi_np)
+                .to(device, non_blocking=True)
+                .permute(2, 0, 1)
+                .contiguous()
             )
 
         # --- STEP 1: FAST DETECTION (BBoxes and 5-point landmarks ONLY) ---
         # CRITICAL OPTIMIZATION: Heavy landmark detection (68/203 points) is disabled here
         # to rapidly scan the crowd without burning GPU cycles.
         bboxes, kpss_5, _ = self.main_window.function_worker.run_detect(
-            frame_tensor,
-            control.get("DetectorModelSelection", "RetinaFace"),
+            detect_input_tensor,
+            detect_mode,
             max_num=int(control.get("MaxFacesToDetectSlider", 20)),
             score=control.get("DetectorScoreSlider", 50) / 100.0,
             input_size=(512, 512),
@@ -193,6 +247,18 @@ class SequentialDetector:
             control_override=control,
             bypass_bytetrack=False,
         )
+
+        if (
+            use_cpu_roi_detection
+            and isinstance(bboxes, numpy.ndarray)
+            and bboxes.shape[0] > 0
+        ):
+            bboxes = bboxes.astype(numpy.float32, copy=True)
+            kpss_5 = kpss_5.astype(numpy.float32, copy=True)
+            bboxes[:, [0, 2]] /= det_scale_x
+            bboxes[:, [1, 3]] /= det_scale_y
+            kpss_5[:, :, 0] /= det_scale_x
+            kpss_5[:, :, 1] /= det_scale_y
 
         # --- STEP 2: SMART FILTERING & TRACKING (Hybrid Architecture) ---
         valid_indices: list = []
@@ -220,9 +286,27 @@ class SequentialDetector:
                 current_kps5 = kpss_5[i]
 
                 # 1. Strict Identity Anchor Pass
-                face_emb, _ = self.main_window.function_worker.run_recognize_direct(
-                    frame_tensor, current_kps5, "Auto", rec_model
-                )
+                if use_cpu_roi_detection:
+                    rx1, ry1, rx2, ry2 = faceutil.compute_face_box_roi(
+                        int(frame_rgb.shape[0]),
+                        int(frame_rgb.shape[1]),
+                        bbox=current_bbox,
+                        kps=current_kps5,
+                        scale=2.5,
+                        min_side=128,
+                    )
+                    rec_roi = _upload_face_roi(rx1, ry1, rx2, ry2)
+                    local_kps5 = current_kps5.astype(numpy.float32, copy=True)
+                    local_kps5[:, 0] -= rx1
+                    local_kps5[:, 1] -= ry1
+                    face_emb, _ = self.main_window.function_worker.run_recognize_direct(
+                        rec_roi, local_kps5, "Auto", rec_model
+                    )
+                    del rec_roi
+                else:
+                    face_emb, _ = self.main_window.function_worker.run_recognize_direct(
+                        frame_tensor, current_kps5, "Auto", rec_model
+                    )
 
                 match, _, _ = find_best_target_match(
                     face_emb,
@@ -348,6 +432,8 @@ class SequentialDetector:
         if len(filtered_bboxes) == 0:
             if owns_frame_tensor and frame_tensor is not None:
                 del frame_tensor
+            if det_tensor is not None:
+                del det_tensor
 
             # Clear smoothing states since target is lost
             self._smoothed_kps.clear()
@@ -375,8 +461,20 @@ class SequentialDetector:
         head_bboxes = None
         if use_landmark and landmark_mode == "hrffa" and num_targets > 0:
             head_bboxes = self.main_window.function_worker.run_detect_head_bboxes(
-                frame_tensor
+                detect_input_tensor
             )
+            if (
+                use_cpu_roi_detection
+                and head_bboxes is not None
+                and len(head_bboxes) > 0
+            ):
+                head_bboxes = numpy.asarray(head_bboxes, dtype=numpy.float32).copy()
+                head_bboxes[:, [0, 2]] /= det_scale_x
+                head_bboxes[:, [1, 3]] /= det_scale_y
+
+        if det_tensor is not None:
+            del det_tensor
+            det_tensor = None
 
         for i in range(num_targets):
             current_bbox = filtered_bboxes[i]
@@ -387,13 +485,53 @@ class SequentialDetector:
             kps_203_local = numpy.zeros((203, 2), dtype=numpy.float32)
             has_valid_203 = False
 
+            if use_cpu_roi_detection and (requires_203 or use_landmark):
+                matching_heads = None
+                if head_bboxes is not None and len(head_bboxes) > 0:
+                    overlaps = (
+                        (head_bboxes[:, 2] >= current_bbox[0])
+                        & (head_bboxes[:, 0] <= current_bbox[2])
+                        & (head_bboxes[:, 3] >= current_bbox[1])
+                        & (head_bboxes[:, 1] <= current_bbox[3])
+                    )
+                    if overlaps.any():
+                        matching_heads = head_bboxes[overlaps]
+
+                lm_x1, lm_y1, lm_x2, lm_y2 = faceutil.compute_face_box_roi(
+                    int(frame_rgb.shape[0]),
+                    int(frame_rgb.shape[1]),
+                    bbox=current_bbox,
+                    kps=current_kps5,
+                    scale=3.0,
+                    min_side=128,
+                    extra_boxes=matching_heads,
+                )
+                lm_img = _upload_face_roi(lm_x1, lm_y1, lm_x2, lm_y2)
+                lm_bbox = current_bbox.astype(numpy.float32, copy=True)
+                lm_bbox[[0, 2]] -= lm_x1
+                lm_bbox[[1, 3]] -= lm_y1
+                lm_kps5 = current_kps5.astype(numpy.float32, copy=True)
+                lm_kps5[:, 0] -= lm_x1
+                lm_kps5[:, 1] -= lm_y1
+                lm_heads = None
+                if matching_heads is not None:
+                    lm_heads = matching_heads.copy()
+                    lm_heads[:, [0, 2]] -= lm_x1
+                    lm_heads[:, [1, 3]] -= lm_y1
+            else:
+                lm_x1, lm_y1 = 0, 0
+                lm_img = frame_tensor
+                lm_bbox = current_bbox
+                lm_kps5 = current_kps5
+                lm_heads = head_bboxes
+
             # FW-LOGIC-FIX 1: Extract forced 203 landmarks FIRST if required
             if requires_203:
                 lm_203_5, lm_203, _ = (
                     self.main_window.function_worker.run_detect_landmark(
-                        frame_tensor,
-                        current_bbox,
-                        current_kps5,
+                        lm_img,
+                        lm_bbox,
+                        lm_kps5,
                         detect_mode="203",
                         score=0.5,
                         use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
@@ -401,12 +539,21 @@ class SequentialDetector:
                     )
                 )
                 if len(lm_203) > 0:
-                    kps_203_local = lm_203
+                    kps_203_local = numpy.asarray(lm_203, dtype=numpy.float32).copy()
+                    if lm_x1 or lm_y1:
+                        kps_203_local[:, 0] += lm_x1
+                        kps_203_local[:, 1] += lm_y1
                     has_valid_203 = True
                     # If 203 was extracted for fallback, but the user ALSO selected 203
                     # as their primary UI model, update the Swapper's 5 points immediately.
                     if landmark_mode == "203" and len(lm_203_5) > 0:
-                        filtered_kpss_5[i] = lm_203_5
+                        lm_203_5_shifted = numpy.asarray(
+                            lm_203_5, dtype=numpy.float32
+                        ).copy()
+                        if lm_x1 or lm_y1:
+                            lm_203_5_shifted[:, 0] += lm_x1
+                            lm_203_5_shifted[:, 1] += lm_y1
+                        filtered_kpss_5[i] = lm_203_5_shifted
 
                 filtered_kpss_203.append(kps_203_local)
 
@@ -425,20 +572,34 @@ class SequentialDetector:
                 else:
                     lm_std_5, lm_kpss, _ = (
                         self.main_window.function_worker.run_detect_landmark(
-                            frame_tensor,
-                            current_bbox,
-                            current_kps5,
+                            lm_img,
+                            lm_bbox,
+                            lm_kps5,
                             detect_mode=landmark_mode,
                             score=control.get("LandmarkDetectScoreSlider", 50) / 100.0,
                             use_mean_eyes=control.get("LandmarkMeanEyesToggle", False),
                             from_points=from_points,
-                            head_bboxes=head_bboxes,
+                            head_bboxes=lm_heads,
                         )
                     )
                     if len(lm_kpss) > 0:
-                        kps_standard = lm_kpss
+                        kps_standard = numpy.asarray(
+                            lm_kpss, dtype=numpy.float32
+                        ).copy()
+                        if lm_x1 or lm_y1:
+                            kps_standard[:, 0] += lm_x1
+                            kps_standard[:, 1] += lm_y1
                         if len(lm_std_5) > 0:
-                            filtered_kpss_5[i] = lm_std_5
+                            lm_std_5_shifted = numpy.asarray(
+                                lm_std_5, dtype=numpy.float32
+                            ).copy()
+                            if lm_x1 or lm_y1:
+                                lm_std_5_shifted[:, 0] += lm_x1
+                                lm_std_5_shifted[:, 1] += lm_y1
+                            filtered_kpss_5[i] = lm_std_5_shifted
+
+            if use_cpu_roi_detection and (requires_203 or use_landmark):
+                del lm_img
 
             filtered_kpss.append(kps_standard)
 
