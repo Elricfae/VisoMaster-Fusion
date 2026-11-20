@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -20,10 +21,13 @@ import merge  # noqa: E402
 import schema as schema_mod  # noqa: E402
 import vmf_cli  # noqa: E402
 
+server: Any = None
 try:
-    import server  # needs PySide6 (portable Python)
+    import server as _server  # needs PySide6 (portable Python)
+
+    server = _server
 except ImportError:  # pragma: no cover
-    server = None
+    pass
 
 
 class LaunchEnvAllowlistTests(unittest.TestCase):

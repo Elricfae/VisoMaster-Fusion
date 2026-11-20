@@ -39,15 +39,14 @@ def disable_power_throttling(pid: int | None = None) -> dict:
         k32.OpenProcess.restype = wintypes.HANDLE
         k32.GetCurrentProcess.restype = wintypes.HANDLE
         own = pid is None or pid == os.getpid()
-        h = (
-            k32.GetCurrentProcess()
-            if own
-            else k32.OpenProcess(
+        if pid is None or pid == os.getpid():
+            h = k32.GetCurrentProcess()
+        else:
+            h = k32.OpenProcess(
                 _PROCESS_SET_INFORMATION | _PROCESS_QUERY_LIMITED_INFORMATION,
                 False,
                 int(pid),
             )
-        )
         if not h:
             return {
                 "applied": False,

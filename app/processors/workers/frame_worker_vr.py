@@ -533,7 +533,7 @@ class VRProcessor:
     def process_frame_vr180(
         self,
         original_equirect_tensor_for_vr: torch.Tensor,
-        img_numpy_rgb_uint8: np.ndarray,
+        img_numpy_rgb_uint8: np.ndarray | None,
         control: dict,
         stop_event: threading.Event,
     ) -> torch.Tensor:
@@ -555,27 +555,29 @@ class VRProcessor:
         # How this frame's pixels map to directions: eye layout, storage projection
         # and per-eye coverage.  Everything downstream asks the geometry rather than
         # assuming the VR180 360°×180° special case.
+        frame_h = int(original_equirect_tensor_for_vr.shape[1])
+        frame_w = int(original_equirect_tensor_for_vr.shape[2])
         geometry = VRGeometry.from_control(
             control,
-            frame_height=img_numpy_rgb_uint8.shape[0],
-            frame_width=img_numpy_rgb_uint8.shape[1],
+            frame_height=frame_h,
+            frame_width=frame_w,
         )
 
         # VR-08: cache the EquirectangularConverter instance at worker level.
         # When the geometry is unchanged (common for video), reuse the cached
-        # instance and update its image data in-place to avoid redundant Python-side
-        # object allocation.
+        # instance and update its image data in-place directly from GPU VRAM
+        # (avoiding redundant CPU->GPU re-uploads).
         if self._vr_converter is None or self._vr_geometry != geometry:
             self._vr_converter = EquirectangularConverter(
-                img_numpy_rgb_uint8,
+                original_equirect_tensor_for_vr,
                 device=self.worker.models_processor.device,
                 geometry=geometry,
             )
             self._vr_geometry = geometry
         else:
-            # VR-MEM-01: update in-place to avoid new GPU allocation per frame.
+            # VR-MEM-01: update in-place directly in VRAM to avoid new GPU allocation per frame.
             self._vr_converter.equirect_tensor_cxhxw_rgb_uint8.copy_(
-                torch.from_numpy(img_numpy_rgb_uint8).permute(2, 0, 1)
+                original_equirect_tensor_for_vr
             )
             # VR-PERF-11: invalidate the per-frame float cache so GetPerspective
             # recomputes it once from the fresh uint8 data (instead of 24+ times).
@@ -1216,7 +1218,7 @@ class VRProcessor:
         # P2E converter is properly recreated when the geometry changes.
         if self._vr_p2e_converter is None or self._vr_p2e_geometry != geometry:
             self._vr_p2e_converter = PerspectiveConverter(
-                img_numpy_rgb_uint8,
+                original_equirect_tensor_for_vr,
                 device=self.worker.models_processor.device,
                 geometry=geometry,
             )

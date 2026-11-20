@@ -4,6 +4,7 @@ from collections.abc import Mapping
 import cv2
 import numpy
 import torch
+import torch.nn.functional as F
 
 from app.helpers.miscellaneous import find_best_target_match
 from app.processors.utils import faceutil
@@ -58,7 +59,7 @@ class SequentialDetector:
 
     def run(
         self,
-        frame_rgb: numpy.ndarray,
+        frame_rgb: Optional[numpy.ndarray],
         local_control_for_worker: dict,
         local_params_for_worker: Optional[dict] = None,
         is_master_edit_active: bool = False,
@@ -184,17 +185,26 @@ class SequentialDetector:
         # When frame_tensor is not pre-supplied and the frame exceeds detector input size,
         # downscale a small copy on CPU for detection and upload only tight face ROIs for
         # ArcFace recognition and dense landmarking.
+        # When frame_tensor IS pre-supplied (VRAM decode path), downscale directly in VRAM
+        # so detection never runs over a full 4K/8K tensor and zero bytes cross PCIe.
         use_cpu_roi_detection = (
             frame_tensor is None
             and isinstance(frame_rgb, numpy.ndarray)
             and frame_rgb.ndim == 3
             and max(int(frame_rgb.shape[0]), int(frame_rgb.shape[1])) > target_det_side
         )
+        use_gpu_downscale_detection = (
+            frame_tensor is not None
+            and frame_tensor.ndim == 3
+            and max(int(frame_tensor.shape[1]), int(frame_tensor.shape[2]))
+            > target_det_side
+        )
         det_scale_x = 1.0
         det_scale_y = 1.0
         det_tensor: Optional[torch.Tensor] = None
 
         if use_cpu_roi_detection:
+            assert frame_rgb is not None
             orig_h, orig_w = int(frame_rgb.shape[0]), int(frame_rgb.shape[1])
             pre_scale = target_det_side / float(max(orig_h, orig_w))
             det_w = max(1, int(round(orig_w * pre_scale)))
@@ -211,8 +221,29 @@ class SequentialDetector:
                 .contiguous()
             )
             detect_input_tensor = det_tensor
+        elif use_gpu_downscale_detection:
+            assert frame_tensor is not None
+            orig_h, orig_w = int(frame_tensor.shape[1]), int(frame_tensor.shape[2])
+            pre_scale = target_det_side / float(max(orig_h, orig_w))
+            det_w = max(1, int(round(orig_w * pre_scale)))
+            det_h = max(1, int(round(orig_h * pre_scale)))
+            det_scale_x = det_w / float(orig_w)
+            det_scale_y = det_h / float(orig_h)
+            det_tensor = (
+                F.interpolate(
+                    frame_tensor.unsqueeze(0).float(),
+                    size=(det_h, det_w),
+                    mode="area",
+                )
+                .squeeze(0)
+                .clamp_(0, 255)
+                .to(torch.uint8)
+                .contiguous()
+            )
+            detect_input_tensor = det_tensor
         else:
             if frame_tensor is None:
+                assert frame_rgb is not None
                 frame_tensor = (
                     torch.from_numpy(frame_rgb)
                     .to(device, non_blocking=True)
@@ -221,6 +252,7 @@ class SequentialDetector:
             detect_input_tensor = frame_tensor
 
         def _upload_face_roi(rx1: int, ry1: int, rx2: int, ry2: int) -> torch.Tensor:
+            assert frame_rgb is not None
             roi_np = numpy.ascontiguousarray(frame_rgb[ry1:ry2, rx1:rx2])
             return (
                 torch.from_numpy(roi_np)
@@ -249,7 +281,7 @@ class SequentialDetector:
         )
 
         if (
-            use_cpu_roi_detection
+            (use_cpu_roi_detection or use_gpu_downscale_detection)
             and isinstance(bboxes, numpy.ndarray)
             and bboxes.shape[0] > 0
         ):
@@ -286,7 +318,7 @@ class SequentialDetector:
                 current_kps5 = kpss_5[i]
 
                 # 1. Strict Identity Anchor Pass
-                if use_cpu_roi_detection:
+                if use_cpu_roi_detection and frame_rgb is not None:
                     rx1, ry1, rx2, ry2 = faceutil.compute_face_box_roi(
                         int(frame_rgb.shape[0]),
                         int(frame_rgb.shape[1]),
@@ -464,7 +496,7 @@ class SequentialDetector:
                 detect_input_tensor
             )
             if (
-                use_cpu_roi_detection
+                (use_cpu_roi_detection or use_gpu_downscale_detection)
                 and head_bboxes is not None
                 and len(head_bboxes) > 0
             ):
@@ -485,7 +517,11 @@ class SequentialDetector:
             kps_203_local = numpy.zeros((203, 2), dtype=numpy.float32)
             has_valid_203 = False
 
-            if use_cpu_roi_detection and (requires_203 or use_landmark):
+            if (
+                use_cpu_roi_detection
+                and frame_rgb is not None
+                and (requires_203 or use_landmark)
+            ):
                 matching_heads = None
                 if head_bboxes is not None and len(head_bboxes) > 0:
                     overlaps = (
@@ -598,7 +634,11 @@ class SequentialDetector:
                                 lm_std_5_shifted[:, 1] += lm_y1
                             filtered_kpss_5[i] = lm_std_5_shifted
 
-            if use_cpu_roi_detection and (requires_203 or use_landmark):
+            if (
+                use_cpu_roi_detection
+                and frame_rgb is not None
+                and (requires_203 or use_landmark)
+            ):
                 del lm_img
 
             filtered_kpss.append(kps_standard)
@@ -659,7 +699,18 @@ class SequentialDetector:
         # Matches faces between current frame and previous frame based on spatial proximity (centroids).
         # Smooths the keypoints using an Exponential Moving Average to eliminate micro-jitter.
         if is_smoothing_enabled:
-            img_h_for_kps, img_w_for_kps = frame_rgb.shape[0], frame_rgb.shape[1]
+            if frame_rgb is not None:
+                img_h_for_kps, img_w_for_kps = (
+                    int(frame_rgb.shape[0]),
+                    int(frame_rgb.shape[1]),
+                )
+            elif frame_tensor is not None:
+                img_h_for_kps, img_w_for_kps = (
+                    int(frame_tensor.shape[1]),
+                    int(frame_tensor.shape[2]),
+                )
+            else:
+                img_h_for_kps, img_w_for_kps = 0, 0
 
             if isinstance(kpss_5, numpy.ndarray) and kpss_5.shape[0] > 0:
                 kpss_5 = kpss_5.copy()

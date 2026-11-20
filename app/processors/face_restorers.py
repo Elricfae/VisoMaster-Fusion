@@ -72,12 +72,11 @@ class FaceRestorers:
         """Compare canonical names, including names set by UI callbacks."""
         canonical = self.model_map.get(model_name, model_name)
         control = self.models_processor.main_window.control
+        detailer_model = control.get("FaceDetailerRestorerTypeSelection", "GPEN-1024")
         if (
             control.get("FaceDetailerEnableToggle", False)
-            and self.model_map.get(
-                control.get("FaceDetailerRestorerTypeSelection", "GPEN-1024")
-            )
-            == canonical
+            and isinstance(detailer_model, str)
+            and self.model_map.get(detailer_model) == canonical
         ):
             return True
         with self._slot_lock:

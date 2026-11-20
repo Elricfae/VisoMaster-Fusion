@@ -147,7 +147,12 @@ def test_save_requires_output_folder(qapp, tmp_path, monkeypatch):
     )
 
     assert screenshot_actions.save_screenshot(window) is None
-    assert messages == [("Output Folder Required", "Select an Output Folder in Settings before saving a screenshot.")]
+    assert messages == [
+        (
+            "Output Folder Required",
+            "Select an Output Folder in Settings before saving a screenshot.",
+        )
+    ]
 
 
 def test_screenshot_controls_are_added_once(qapp):

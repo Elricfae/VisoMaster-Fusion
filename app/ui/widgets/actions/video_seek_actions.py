@@ -417,6 +417,7 @@ class ThumbnailExtractionWorker(QtCore.QThread):
         frame_intervals,
         target_height,
         rotation_angle: int | None = None,
+        prefer_gpu: bool = True,
         parent=None,
     ):
         super().__init__(parent)
@@ -424,6 +425,7 @@ class ThumbnailExtractionWorker(QtCore.QThread):
         self.frame_intervals = frame_intervals
         self.target_height = target_height
         self.rotation_angle = rotation_angle
+        self.prefer_gpu = bool(prefer_gpu)
         self._is_cancelled = False
 
     def cancel(self):
@@ -438,7 +440,9 @@ class ThumbnailExtractionWorker(QtCore.QThread):
             if self.rotation_angle is not None
             else get_video_rotation(self.media_path)
         )
-        cap = cv2.VideoCapture(self.media_path)
+        cap = misc_helpers.open_video_capture(
+            self.media_path, prefer_gpu=self.prefer_gpu
+        )
 
         if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
             cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
@@ -627,11 +631,17 @@ class ThumbnailTrackWidget(QtWidgets.QWidget):
             # Cancel any active worker asynchronously without blocking the GUI thread
             self._retire_active_worker()
 
+            prefer_gpu = True
+            if self.main_window is not None and hasattr(self.main_window, "control"):
+                prefer_gpu = bool(
+                    self.main_window.control.get("PyNvVideoCodecDecodeToggle", True)
+                )
             worker = ThumbnailExtractionWorker(
                 vp.media_path,
                 missing_visible,
                 self.height(),
                 rotation_angle=vp.media_rotation,
+                prefer_gpu=prefer_gpu,
                 parent=self,
             )
             worker.thumbnail_ready.connect(self.on_thumbnail_ready)

@@ -356,7 +356,7 @@ def select_workspace_faces(ws: dict, faces: str) -> list[str]:
         return all_faces
     if faces == "selected":
         sel = ws.get("selected_target_face_id")
-        return [sel] if sel in all_faces else []
+        return [sel] if isinstance(sel, str) and sel in all_faces else []
     if faces not in all_faces:
         raise ValueError(
             f"face '{faces}' not in the workspace (available: {all_faces})"

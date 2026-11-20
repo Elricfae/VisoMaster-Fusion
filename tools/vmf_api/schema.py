@@ -154,11 +154,8 @@ class Schema:
             # Some layouts declare a default outside [min, max] (e.g.
             # FaceExpressionNormalizeLipsThresholdDecimalSlider: 0.03 < 0.10);
             # VisoMaster stores it as-is, so the declared default is always valid.
-            is_default = (
-                e is not None
-                and _num(e.default) is not None
-                and abs(_num(e.default) - n) <= 1e-9
-            )
+            default_num = _num(e.default) if e is not None else None
+            is_default = default_num is not None and abs(default_num - n) <= 1e-9
             if e is not None and not is_default:
                 if e.min is not None and n < e.min - 1e-9:
                     return False, value, f"{key}: {n} < min {e.min:g}"

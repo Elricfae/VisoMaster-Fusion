@@ -2,21 +2,29 @@ import os
 import math
 import json
 import subprocess
-from typing import Dict, Any, Optional, Mapping, Tuple, List
+from typing import Dict, Any, Optional, Mapping, Tuple, List, Union
 import numpy
+import torch
+
+from app.processors.video_utils.nv_video_codec import NvVideoEncoder
 
 
 class FFmpegEncoder:
     """
-    Handles FFmpeg subprocess lifecycle, argument generation, and raw frame encoding.
-    This class isolates OS-level subprocess management from the main video processing loop
-    to prevent thread blocking and simplify recording logic.
+    Handles video recording encoding via optional PyNvVideoCodec NVENC (direct from VRAM)
+    with automatic fallback to an FFmpeg subprocess (for HDR/CPU/non-NVIDIA/unsupported formats).
     """
 
     def __init__(self) -> None:
         self.recording_sp: Optional[subprocess.Popen] = None
+        self._nv_encoder: Optional[NvVideoEncoder] = None
         self.frames_written: int = 0
         self._source_metrics_cache: Dict[str, Dict[str, Any]] = {}
+
+    @property
+    def is_gpu_encoder(self) -> bool:
+        """True when active encoding consumes CUDA tensors directly from VRAM."""
+        return self._nv_encoder is not None and self._nv_encoder.is_running()
 
     @staticmethod
     def _parse_ffprobe_fps(rate_text: Any) -> Optional[float]:
@@ -251,18 +259,48 @@ class FFmpegEncoder:
         source_metrics = (
             self.probe_source_video_metrics(media_path) if media_path else None
         )
+        out_width = (
+            frame_width_down if control.get("FrameEnhancerDownToggle") else frame_width
+        )
+        out_height = (
+            frame_height_down
+            if control.get("FrameEnhancerDownToggle")
+            else frame_height
+        )
         ffquality = self.get_adaptive_recording_quality(
             control=control,
             quality_value=int(control.get("FFQualitySlider", 20)),
-            output_width=frame_width_down
-            if control.get("FrameEnhancerDownToggle")
-            else frame_width,
-            output_height=frame_height_down
-            if control.get("FrameEnhancerDownToggle")
-            else frame_height,
+            output_width=out_width,
+            output_height=out_height,
             source_metrics=source_metrics,
             output_fps=fps,
         )
+
+        # Ensure any previous encoder session is cleanly closed
+        self.close_process()
+
+        # Primary path: encode directly from GPU VRAM using optional PyNvVideoCodec NVENC.
+        # Automatically declines when disabled in Settings, for HDR (CPU libx265),
+        # non-NVIDIA GPUs, macOS, odd dimensions, or missing PyNvVideoCodec,
+        # falling back to FFmpeg below.
+        if bool(control.get("PyNvVideoCodecEncodeToggle", True)):
+            nv_enc = NvVideoEncoder()
+            if nv_enc.start(
+                output_filename=output_filename,
+                out_width=out_width,
+                out_height=out_height,
+                fps=fps,
+                control=control,
+                ffquality=ffquality,
+                is_segment=is_segment,
+                media_path=media_path,
+                start_time_sec=start_time_sec,
+                end_time_sec=end_time_sec,
+            ):
+                self._nv_encoder = nv_enc
+                self.recording_sp = None
+                self.frames_written = 0
+                return True
 
         args = [
             "ffmpeg",
@@ -317,34 +355,84 @@ class FFmpegEncoder:
                 ]
             )
         else:
-            args.extend(
-                [
-                    "-c:v",
-                    "hevc_nvenc",
-                    "-preset",
-                    str(control.get("FFPresetsSDRSelection", "p4")),
-                    "-profile:v",
-                    "main10",
-                    "-cq",
-                    str(ffquality),
-                    "-pix_fmt",
-                    "yuv420p10le",
-                    "-colorspace",
-                    "rgb",
-                    "-color_primaries",
-                    "bt709",
-                    "-color_trc",
-                    "bt709",
-                    "-spatial-aq",
-                    str(int(control.get("FFSpatialAQToggle", 0))),
-                    "-temporal-aq",
-                    str(int(control.get("FFTemporalAQToggle", 0))),
-                    "-tier",
-                    "high",
-                    "-tag:v",
-                    "hvc1",
-                ]
+            sdr_codec = (
+                str(control.get("NvEncCodecSelection", "hevc") or "hevc")
+                .strip()
+                .lower()
             )
+            if sdr_codec == "h264":
+                args.extend(
+                    [
+                        "-c:v",
+                        "h264_nvenc",
+                        "-preset",
+                        str(control.get("FFPresetsSDRSelection", "p4")),
+                        "-profile:v",
+                        "high",
+                        "-cq",
+                        str(ffquality),
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-color_primaries",
+                        "bt709",
+                        "-color_trc",
+                        "bt709",
+                        "-spatial-aq",
+                        str(int(control.get("FFSpatialAQToggle", 0))),
+                        "-temporal-aq",
+                        str(int(control.get("FFTemporalAQToggle", 0))),
+                    ]
+                )
+            elif sdr_codec == "av1":
+                args.extend(
+                    [
+                        "-c:v",
+                        "av1_nvenc",
+                        "-preset",
+                        str(control.get("FFPresetsSDRSelection", "p4")),
+                        "-cq",
+                        str(ffquality),
+                        "-pix_fmt",
+                        "yuv420p10le",
+                        "-color_primaries",
+                        "bt709",
+                        "-color_trc",
+                        "bt709",
+                        "-spatial-aq",
+                        str(int(control.get("FFSpatialAQToggle", 0))),
+                        "-temporal-aq",
+                        str(int(control.get("FFTemporalAQToggle", 0))),
+                    ]
+                )
+            else:
+                args.extend(
+                    [
+                        "-c:v",
+                        "hevc_nvenc",
+                        "-preset",
+                        str(control.get("FFPresetsSDRSelection", "p4")),
+                        "-profile:v",
+                        "main10",
+                        "-cq",
+                        str(ffquality),
+                        "-pix_fmt",
+                        "yuv420p10le",
+                        "-colorspace",
+                        "rgb",
+                        "-color_primaries",
+                        "bt709",
+                        "-color_trc",
+                        "bt709",
+                        "-spatial-aq",
+                        str(int(control.get("FFSpatialAQToggle", 0))),
+                        "-temporal-aq",
+                        str(int(control.get("FFTemporalAQToggle", 0))),
+                        "-tier",
+                        "high",
+                        "-tag:v",
+                        "hvc1",
+                    ]
+                )
 
         target_matrix = "bt2020nc" if control.get("HDREncodeToggle") else "bt709"
         scale_params = f"in_range=pc:out_range=tv:out_color_matrix={target_matrix}"
@@ -376,15 +464,31 @@ class FFmpegEncoder:
             print(f"[ERROR] Failed to start FFmpeg subprocess: {e}")
             return False
 
-    def write_frame(self, frame: numpy.ndarray) -> bool:
-        """Writes a BGR numpy array to the FFmpeg stdin pipe."""
+    def write_frame(self, frame: Union[torch.Tensor, numpy.ndarray]) -> bool:
+        """Encodes a CUDA RGB CHW tensor directly via NVENC or writes BGR to FFmpeg."""
+        if self._nv_encoder is not None and self._nv_encoder.is_running():
+            if isinstance(frame, torch.Tensor):
+                ok = self._nv_encoder.write_frame_gpu(frame)
+            else:
+                ok = self._nv_encoder.write_frame_cpu_bgr(frame)
+            if ok:
+                self.frames_written += 1
+            return ok
+
         if (
             self.recording_sp
             and self.recording_sp.stdin
             and not self.recording_sp.stdin.closed
         ):
             try:
-                self.recording_sp.stdin.write(frame.tobytes())
+                if isinstance(frame, torch.Tensor):
+                    # Fallback conversion: GPU RGB [3, H, W] -> CPU BGR [H, W, 3]
+                    frame_np = (
+                        frame[[2, 1, 0]].permute(1, 2, 0).contiguous().cpu().numpy()
+                    )
+                    self.recording_sp.stdin.write(frame_np.tobytes())
+                else:
+                    self.recording_sp.stdin.write(frame.tobytes())
                 self.frames_written += 1
                 return True
             except OSError as e:
@@ -393,7 +497,14 @@ class FFmpegEncoder:
         return False
 
     def close_process(self, timeout: int = 120) -> None:
-        """Safely closes the stdin pipe and waits for the FFmpeg process to finalize."""
+        """Flushes and closes the active NVENC or FFmpeg encoder session."""
+        if self._nv_encoder is not None:
+            try:
+                self._nv_encoder.close()
+            except Exception as e:
+                print(f"[ERROR] Error closing PyNvVideoCodec encoder: {e}")
+            self._nv_encoder = None
+
         if not self.recording_sp:
             return
 
@@ -433,7 +544,9 @@ class FFmpegEncoder:
         self.recording_sp = None
 
     def is_running(self) -> bool:
-        """Check if the subprocess is currently active."""
+        """Check if either NVENC or the FFmpeg subprocess is currently active."""
+        if self._nv_encoder is not None and self._nv_encoder.is_running():
+            return True
         return self.recording_sp is not None and self.recording_sp.poll() is None
 
 

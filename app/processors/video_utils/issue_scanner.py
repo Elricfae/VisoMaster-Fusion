@@ -1,5 +1,4 @@
 import copy
-import cv2
 import numpy
 import torch
 from collections.abc import Iterable, Mapping
@@ -652,7 +651,14 @@ class IssueScanner:
         if not self.media_path:
             raise RuntimeError("Media path is not provided to the scanner.")
 
-        capture = cv2.VideoCapture(self.media_path)
+        prefer_gpu_decode = bool(
+            (
+                base_control if base_control is not None else self.main_window.control
+            ).get("PyNvVideoCodecDecodeToggle", True)
+        )
+        capture = misc_helpers.open_video_capture(
+            self.media_path, prefer_gpu=prefer_gpu_decode
+        )
         if not capture or not capture.isOpened():
             raise RuntimeError("Could not open the selected video for scanning.")
 
@@ -832,12 +838,12 @@ class IssueScanner:
                         frame_number = next_frame
                         continue
 
-                    ret, frame_bgr = misc_helpers.read_frame(
+                    ret, frame_raw = misc_helpers.read_frame_gpu(
                         capture,
                         self.media_rotation,
                         preview_target_height=segment_target_height,
                     )
-                    if not ret or not isinstance(frame_bgr, numpy.ndarray):
+                    if not ret or frame_raw is None:
                         # Treat unreadable frames as absolute issues for all faces
                         for face_id in issue_frames_by_face:
                             emit_issue(face_id, frame_number)
@@ -847,20 +853,34 @@ class IssueScanner:
                         frame_number += 1
                         continue
 
-                    # Pre-process numpy array for fast PyTorch ingestion
-                    frame_rgb = numpy.ascontiguousarray(frame_bgr[..., ::-1])
-                    frame_rgb_uint8 = (
-                        frame_rgb
-                        if frame_rgb.dtype == numpy.uint8
-                        else frame_rgb.astype("uint8", copy=False)
-                    )
-
-                    # Memory Critical: explicitly allocate tensor on correct target device
-                    frame_tensor = (
-                        torch.from_numpy(frame_rgb_uint8)
-                        .to(self.main_window.models_processor.device, non_blocking=True)
-                        .permute(2, 0, 1)
-                    )
+                    if isinstance(frame_raw, torch.Tensor):
+                        # Zero-copy VRAM path from PyNvVideoCodec NVDEC
+                        frame_rgb = None
+                        frame_tensor = frame_raw
+                        if (
+                            frame_tensor.device
+                            != self.main_window.models_processor.device
+                        ):
+                            frame_tensor = frame_tensor.to(
+                                self.main_window.models_processor.device,
+                                non_blocking=True,
+                            )
+                    else:
+                        # CPU fallback path from OpenCV VideoCapture
+                        frame_rgb = numpy.ascontiguousarray(frame_raw[..., ::-1])
+                        frame_rgb_uint8 = (
+                            frame_rgb
+                            if frame_rgb.dtype == numpy.uint8
+                            else frame_rgb.astype("uint8", copy=False)
+                        )
+                        frame_tensor = (
+                            torch.from_numpy(frame_rgb_uint8)
+                            .to(
+                                self.main_window.models_processor.device,
+                                non_blocking=True,
+                            )
+                            .permute(2, 0, 1)
+                        )
 
                     # Trigger the sequential tracker
                     bboxes, kpss_5, _, _ = self.sequential_detector.run(

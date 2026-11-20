@@ -4,13 +4,17 @@ import sys
 import unittest
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+server: Any = None
 try:
-    import server  # needs PySide6 (portable Python)
+    import server as _server  # needs PySide6 (portable Python)
+
+    server = _server
 except ImportError:  # pragma: no cover
-    server = None
+    pass
 
 
 @unittest.skipIf(server is None, "PySide6 missing: run with the portable Python")

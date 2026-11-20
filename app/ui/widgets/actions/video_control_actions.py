@@ -2888,7 +2888,12 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
                     # Get rotation for batch processing
                     rotation_angle = get_video_rotation(media_path)
                     main_window.video_processor.media_rotation = rotation_angle
-                    media_capture = cv2.VideoCapture(media_path)
+                    media_capture = misc_helpers.open_video_capture(
+                        media_path,
+                        prefer_gpu=bool(
+                            main_window.control.get("PyNvVideoCodecDecodeToggle", True)
+                        ),
+                    )
                     # Explicitly enable OpenCV's auto-rotation ---
                     if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
                         media_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
@@ -3106,7 +3111,12 @@ def process_batch_images(main_window: "MainWindow", process_all_faces: bool):
             if main_window.video_processor.file_type == "video":
                 # --- Re-open the original video capture ---
                 print(f"[INFO] Restoring original video capture: {original_media_path}")
-                new_capture = cv2.VideoCapture(original_media_path)
+                new_capture = misc_helpers.open_video_capture(
+                    original_media_path,
+                    prefer_gpu=bool(
+                        main_window.control.get("PyNvVideoCodecDecodeToggle", True)
+                    ),
+                )
                 # Explicitly enable OpenCV's auto-rotation ---
                 if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
                     new_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)

@@ -244,7 +244,7 @@ def wait_ready(
         time.sleep(interval)
 
 
-_LAST_READY = {"line": None}
+_LAST_READY: dict[str, str | None] = {"line": None}
 
 
 def _print_ready(st: dict):

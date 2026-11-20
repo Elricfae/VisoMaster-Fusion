@@ -218,3 +218,31 @@ def test_the_hrffa_head_detector_is_not_a_selectable_face_detector():
         assert not any("deim" in str(option).lower() for option in entry["options"]), (
             f"{cat}/{name}: the HRFFA head detector must stay internal"
         )
+
+
+def test_pynv_playback_and_recording_settings_exist():
+    playback = SETTINGS_LAYOUT_DATA["Video Playback Settings"]
+    decode_toggle = playback["PyNvVideoCodecDecodeToggle"]
+    assert decode_toggle["default"] is True
+    assert callable(decode_toggle.get("exec_function"))
+
+    recording = SETTINGS_LAYOUT_DATA["Video Recording Settings"]
+    encode_toggle = recording["PyNvVideoCodecEncodeToggle"]
+    assert encode_toggle["default"] is True
+
+    codec_sel = recording["NvEncCodecSelection"]
+    assert codec_sel["options"] == ["hevc", "h264", "av1"]
+    assert codec_sel["default"] == "hevc"
+    assert codec_sel.get("parentToggle") == "FFMpegOptionsToggle"
+    assert codec_sel.get("requiredToggleValue") is True
+
+    tuning_sel = recording["NvEncTuningSelection"]
+    assert tuning_sel["options"] == [
+        "high_quality",
+        "low_latency",
+        "ultra_low_latency",
+        "lossless",
+    ]
+    assert tuning_sel["default"] == "high_quality"
+    assert tuning_sel.get("parentToggle") == "FFMpegOptionsToggle"
+    assert tuning_sel.get("requiredToggleValue") is True

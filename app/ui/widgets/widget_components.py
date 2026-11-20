@@ -384,9 +384,14 @@ class TargetMediaCardButton(CardButton):
             )
             main_window.video_processor.media_rotation = rotation_angle
             open_start = time.perf_counter()
-            media_capture = cv2.VideoCapture(self.media_path)
+            media_capture = misc_helpers.open_video_capture(
+                self.media_path,
+                prefer_gpu=bool(
+                    main_window.control.get("PyNvVideoCodecDecodeToggle", True)
+                ),
+            )
             print(
-                f"[INFO] Media Load [2/3]: OpenCV VideoCapture initialization completed in "
+                f"[INFO] Media Load [2/3]: {'PyNvVideoCodec NVDEC' if getattr(media_capture, 'is_gpu_backed', False) else 'OpenCV VideoCapture'} initialization completed in "
                 f"{time.perf_counter() - open_start:.3f}s for '{self.media_path}'."
             )
             # Explicitly enable OpenCV's auto-rotation to let it handle metadata natively

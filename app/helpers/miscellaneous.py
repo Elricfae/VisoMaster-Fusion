@@ -12,7 +12,7 @@ from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from torchvision.transforms import v2
-from typing import Dict, Mapping, Tuple, Optional, Any, Collection, Sequence
+from typing import Dict, Mapping, Tuple, Optional, Any, Collection, Sequence, Union
 import threading
 import subprocess
 import json
@@ -1072,8 +1072,8 @@ _capture_locks: Dict[int, threading.Lock] = {}
 _locks_mutex = threading.Lock()
 
 
-def _get_capture_lock(capture_obj: cv2.VideoCapture) -> threading.Lock:
-    """Retrieves or creates a unique thread lock for a specific VideoCapture instance."""
+def _get_capture_lock(capture_obj: Any) -> threading.Lock:
+    """Retrieves or creates a unique thread lock for a specific video capture instance."""
     obj_id = id(capture_obj)
     with _locks_mutex:
         if obj_id not in _capture_locks:
@@ -1081,8 +1081,53 @@ def _get_capture_lock(capture_obj: cv2.VideoCapture) -> threading.Lock:
         return _capture_locks[obj_id]
 
 
+def open_video_capture(
+    media_path: str,
+    prefer_gpu: bool = True,
+    gpu_id: int = 0,
+) -> Any:
+    """Opens a video capture using optional PyNvVideoCodec NVDEC with OpenCV fallback."""
+    from app.processors.video_utils.nv_video_codec import (
+        open_video_capture as _open_nv_or_cv,
+    )
+
+    return _open_nv_or_cv(media_path, prefer_gpu=prefer_gpu, gpu_id=gpu_id)
+
+
+def read_frame_gpu(
+    capture_obj: Any,
+    media_rotation: int = 0,
+    preview_target_height: Optional[int] = None,
+) -> Tuple[bool, Optional[Union[torch.Tensor, np.ndarray]]]:
+    """Reads a frame directly into VRAM when ``capture_obj`` is GPU-backed.
+
+    Returns:
+        - ``(True, torch.Tensor[3, H, W] RGB uint8 on CUDA)`` when using ``NvVideoCapture``.
+        - ``(True, np.ndarray[H, W, 3] BGR uint8 on CPU)`` when falling back to ``cv2.VideoCapture``.
+        - ``(False, None)`` on EOF or read error.
+    """
+    if capture_obj is None:
+        return False, None
+
+    if getattr(capture_obj, "is_gpu_backed", False) and hasattr(
+        capture_obj, "read_gpu"
+    ):
+        capture_lock = _get_capture_lock(capture_obj)
+        with capture_lock:
+            return capture_obj.read_gpu(
+                rotation=media_rotation,
+                target_height=preview_target_height,
+            )
+
+    return read_frame(
+        capture_obj,
+        media_rotation,
+        preview_target_height=preview_target_height,
+    )
+
+
 def read_frame(
-    capture_obj: cv2.VideoCapture,
+    capture_obj: Any,
     media_rotation: int = 0,
     preview_target_height: Optional[int] = None,
 ) -> Tuple[bool, Optional[np.ndarray]]:
@@ -1093,6 +1138,25 @@ def read_frame(
     The 'lock' is critical as 'capture_obj' is a shared resource.
     It prevents race conditions between the feeder thread and seek operations.
     """
+    if capture_obj is None:
+        return False, None
+
+    # Fast path for NvVideoCapture: do rotate/resize in VRAM before downloading BGR to CPU.
+    if getattr(capture_obj, "is_gpu_backed", False) and hasattr(
+        capture_obj, "read_gpu"
+    ):
+        capture_lock = _get_capture_lock(capture_obj)
+        with capture_lock:
+            ret, tensor_chw = capture_obj.read_gpu(
+                rotation=media_rotation,
+                target_height=preview_target_height,
+            )
+        if not ret or tensor_chw is None:
+            return False, None
+        frame_bgr = tensor_chw[[2, 1, 0]].permute(1, 2, 0).contiguous().cpu().numpy()
+        del tensor_chw
+        return True, frame_bgr
+
     capture_lock = _get_capture_lock(capture_obj)
 
     with capture_lock:

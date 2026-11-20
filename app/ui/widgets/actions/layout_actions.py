@@ -651,11 +651,11 @@ def add_widgets_to_tab_layout(
                 continue
             if widget_data.get("hidden", False):
                 continue
-            widget = main_window.parameter_widgets.get(widget_name)
-            if widget is None:
+            param_widget = main_window.parameter_widgets.get(widget_name)
+            if param_widget is None:
                 continue
             common_widget_actions.show_hide_related_widgets(
-                main_window, widget, widget_name
+                main_window, param_widget, widget_name
             )
 
 

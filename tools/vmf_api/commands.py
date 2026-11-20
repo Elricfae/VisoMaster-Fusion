@@ -165,6 +165,8 @@ def _recording(mw) -> bool:
 def _vram(mw) -> dict | None:
     """Whole-GPU VRAM, same source as VisoMaster's VRAM bar (nvidia-smi, else torch)."""
     mp = getattr(mw, "models_processor", None)
+    if mp is None:
+        return None
     try:
         used, total = mp.get_gpu_memory()
     except Exception:
@@ -191,7 +193,7 @@ def _swap_state(mw) -> dict:
             "has_source": bool(inputs or embeds),
         }
     enabled = bool(btn.isChecked()) if btn is not None else None
-    state = {"enabled": enabled, "faces": faces}
+    state: dict[str, Any] = {"enabled": enabled, "faces": faces}
     if enabled is False:
         state["note"] = (
             "swap is off (Clear VRAM turns it off): run_action swapfacesButton to turn it on"
@@ -491,7 +493,7 @@ def _readiness(mw) -> dict:
         waiting.append("playback in progress")
     if _preview_busy(mw):
         waiting.append("computing the preview frame")
-    res = {"ready": not waiting}
+    res: dict[str, Any] = {"ready": not waiting}
     if waiting:
         res["waiting_for"] = waiting
     if loading:
@@ -697,12 +699,13 @@ def _rec_start_time(vp, written: int) -> float:
     t0 = getattr(
         vp, "start_time", None
     )  # VisoMaster's perf_counter() at the start of processing
-    try:
-        ago = time.perf_counter() - float(t0)
-        if 0 <= ago < 7 * 86400:
-            return time.time() - ago
-    except (TypeError, ValueError):
-        pass
+    if t0 is not None:
+        try:
+            ago = time.perf_counter() - float(t0)
+            if 0 <= ago < 7 * 86400:
+                return time.time() - ago
+        except (TypeError, ValueError):
+            pass
     # Fallback, too late when processing is slower than real time: frames written at the media fps.
     return time.time() - (
         written / float(vp.fps) if written and getattr(vp, "fps", 0) else 0
@@ -791,7 +794,7 @@ def _rec_finish(mw, vp, written: int | None = None) -> None:
         "state": state,
         "output_path": out,
         "exists": exists,
-        "size_bytes": Path(out).stat().st_size if exists else None,
+        "size_bytes": Path(out).stat().st_size if out and exists else None,
         "incomplete": bool(out and "_incomplete" in Path(out).stem),
         "frames_written": written,
         "duration_s": round(written / _REC["fps"], 2)
@@ -972,7 +975,7 @@ def _resolve_faces(mw, faces) -> tuple[list, bool]:
 
 
 def _git_info() -> dict:
-    info = {"branch": None, "commit": None}
+    info: dict[str, str | None] = {"branch": None, "commit": None}
     git = common = APP_DIR / ".git"
     try:
         if (
@@ -2282,6 +2285,7 @@ _dialog_cache: dict = {}
 
 def _resolve_slot(expr: str, module, mw):
     parts = expr.split(".")
+    obj: Any
     if parts[0] in ("self", "main_window"):
         obj, parts = type(mw), parts[1:]
     elif module is not None:
@@ -2724,7 +2728,7 @@ def cmd_run_action(ctx, name: str, confirm: str | None = None):
 
 # What VisoMaster's load_saved_workspace reads with data[...] (a missing key or a wrong type stops it halfway,
 # after it cleared the session, with a modal error box).
-_WS_ENTRY_KEYS = {
+_WS_ENTRY_KEYS: dict[str, dict[str, type]] = {
     "input_faces_data": {"media_path": str},
     "embeddings_data": {"embedding_store": dict},
     "target_faces_data": {
@@ -3031,7 +3035,7 @@ def _keep_last_workspace(last: Path) -> str | None:
 
 def _split_paths(path) -> tuple[str | None, list]:
     paths = path if isinstance(path, list) else [path]
-    resolved = [_abs(p) for p in paths if p]
+    resolved = [p for raw in paths if raw and (p := _abs(raw)) is not None]
     if not resolved:
         raise CommandError("missing path")
     for p in resolved:
@@ -4190,7 +4194,7 @@ def _batch_run(mw, all_faces: bool):
     try:
         box_class.question = staticmethod(question)
         common_actions.create_and_show_messagebox = message_box
-        widget_components.ProgressDialog = _SilentProgress
+        setattr(widget_components, "ProgressDialog", _SilentProgress)
         _vca().process_batch_images(mw, all_faces)
     except Exception as e:  # reported by wait_recording, never raised into Qt
         _BATCH["error"] = f"{type(e).__name__}: {e}"
@@ -4201,7 +4205,7 @@ def _batch_run(mw, all_faces: bool):
         )
         box_class.question = orig_question
         common_actions.create_and_show_messagebox = orig_box
-        widget_components.ProgressDialog = orig_progress
+        setattr(widget_components, "ProgressDialog", orig_progress)
 
 
 def _start_batch(mw, name: str, all_faces: bool) -> dict:
@@ -4575,7 +4579,7 @@ def cmd_quit(ctx, save: bool = True):
     from PySide6 import QtCore
 
     mw = ctx.mw
-    res = {"closing": True, "workspace_saved_on_close": bool(save)}
+    res: dict[str, Any] = {"closing": True, "workspace_saved_on_close": bool(save)}
     if save:
         try:
             kept = _keep_last_workspace(

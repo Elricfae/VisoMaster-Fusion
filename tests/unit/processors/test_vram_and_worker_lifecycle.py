@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -16,13 +17,16 @@ from app.processors.workers.function_worker import FunctionWorker
 
 def _make_function_worker(provider_name: str = "TensorRT") -> FunctionWorker:
     fw = FunctionWorker.__new__(FunctionWorker)
-    fw.mp = SimpleNamespace(
-        provider_name=provider_name,
-        device_type="cuda",
-        gpu_id=0,
-        models={},
-        trt_shared_context_sessions=set(),
-        syncvec=SimpleNamespace(cpu=lambda: None),
+    fw.mp = cast(
+        ModelsProcessor,
+        SimpleNamespace(
+            provider_name=provider_name,
+            device_type="cuda",
+            gpu_id=0,
+            models={},
+            trt_shared_context_sessions=set(),
+            syncvec=SimpleNamespace(cpu=lambda: None),
+        ),
     )
     fw._session_locks = {}
     fw._session_locks_mutex = threading.Lock()
@@ -74,7 +78,9 @@ def test_cuda_arena_shrink_runs_under_exclusive_ort_gate():
     session = MagicMock()
     io_binding = MagicMock()
 
-    with patch("app.processors.workers.function_worker.platform_support.blocking_stream_sync"):
+    with patch(
+        "app.processors.workers.function_worker.platform_support.blocking_stream_sync"
+    ):
         # First run triggers shrink -> must be exclusive
         fw.run_ort_with_iobinding(session, io_binding)
         # Second run has no shrink -> shared reader gate
@@ -105,7 +111,10 @@ def test_unload_model_releases_function_worker_session_tracking():
     )
 
     with (
-        patch("app.processors.models_processor.torch.cuda.is_available", return_value=False),
+        patch(
+            "app.processors.models_processor.torch.cuda.is_available",
+            return_value=False,
+        ),
     ):
         mp.unload_model("FaceParser", force_immediate=True)
 
@@ -176,12 +185,28 @@ def test_worker_pool_manager_reuses_persistent_cuda_streams():
         return w
 
     with (
-        patch("app.processors.video_utils.worker_pool_manager.torch.cuda.is_available", return_value=True),
-        patch("app.processors.video_utils.worker_pool_manager.torch.cuda.is_initialized", return_value=True),
-        patch("app.processors.video_utils.worker_pool_manager.torch.cuda.Stream", side_effect=make_stream),
-        patch("app.processors.video_utils.worker_pool_manager.torch.cuda.synchronize") as mock_sync,
-        patch("app.processors.video_utils.worker_pool_manager.torch.cuda.empty_cache") as mock_empty,
-        patch("app.processors.video_utils.worker_pool_manager.FrameWorker", side_effect=make_worker),
+        patch(
+            "app.processors.video_utils.worker_pool_manager.torch.cuda.is_available",
+            return_value=True,
+        ),
+        patch(
+            "app.processors.video_utils.worker_pool_manager.torch.cuda.is_initialized",
+            return_value=True,
+        ),
+        patch(
+            "app.processors.video_utils.worker_pool_manager.torch.cuda.Stream",
+            side_effect=make_stream,
+        ),
+        patch(
+            "app.processors.video_utils.worker_pool_manager.torch.cuda.synchronize"
+        ) as mock_sync,
+        patch(
+            "app.processors.video_utils.worker_pool_manager.torch.cuda.empty_cache"
+        ) as mock_empty,
+        patch(
+            "app.processors.video_utils.worker_pool_manager.FrameWorker",
+            side_effect=make_worker,
+        ),
     ):
         mgr.start_persistent_pool(num_threads=3)
         first_streams = list(mgr.worker_streams)

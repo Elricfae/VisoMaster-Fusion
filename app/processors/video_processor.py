@@ -68,7 +68,8 @@ class VideoProcessor(QObject):
 
     # --- Signals ---
     # Removed QPixmap to ensure thread safety. GUI thread will handle conversion.
-    frame_processed_signal = Signal(int, numpy.ndarray)
+    # Uses `object` so pool workers can emit either CPU numpy.ndarray or CUDA torch.Tensor (VRAM NVENC path).
+    frame_processed_signal = Signal(int, object)
     webcam_frame_processed_signal = Signal(numpy.ndarray)
     single_frame_processed_signal = Signal(int, int, numpy.ndarray, object)
     processing_started_signal = Signal()  # Unified signal for any processing start
@@ -111,7 +112,7 @@ class VideoProcessor(QObject):
         self.media_pipeline = MediaPipeline(self, self.main_window)
 
         # --- Media State ---
-        self.media_capture: cv2.VideoCapture | None = None
+        self.media_capture: Any = None
         self.file_type: str | None = None  # "video", "image", or "webcam"
         self.fps = 0.0  # Target FPS for playback or recording
         self.media_path: str | None = None
@@ -351,7 +352,9 @@ class VideoProcessor(QObject):
         """Facade Property: Routes webcam buffer access to the MediaPipeline."""
         return self.media_pipeline.webcam_frames_to_display
 
-    def store_frame_to_display(self, frame_number: int, frame: numpy.ndarray) -> None:
+    def store_frame_to_display(
+        self, frame_number: int, frame: numpy.ndarray | torch.Tensor
+    ) -> None:
         """Facade: Routes finished frames to the MediaPipeline."""
         self.media_pipeline.store_frame_to_display(frame_number, frame)
 
@@ -1537,6 +1540,13 @@ class VideoProcessor(QObject):
                 "'HEVC Video Extensions' from the Microsoft Store."
             )
 
+    def _prefer_gpu_decode(self) -> bool:
+        """Returns True when the user enabled PyNvVideoCodec GPU decoding."""
+        control = getattr(self.main_window, "control", None)
+        if isinstance(control, Mapping):
+            return bool(control.get("PyNvVideoCodecDecodeToggle", True))
+        return True
+
     def _reopen_video_capture(self, seek_frame: int = 0) -> bool:
         """
         Private helper to robustly re-open the video capture.
@@ -1554,14 +1564,17 @@ class VideoProcessor(QObject):
                     misc_helpers.release_capture(self.media_capture)
                     self.media_capture = None
 
-                self.media_capture = cv2.VideoCapture(self.media_path)
-                # Explicitly enable OpenCV's auto-rotation to let it handle metadata natively
+                self.media_capture = misc_helpers.open_video_capture(
+                    self.media_path,
+                    prefer_gpu=self._prefer_gpu_decode(),
+                )
+                # Explicitly enable auto-rotation to let capture handle metadata natively
                 if hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO"):
                     self.media_capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 1)
                 if self.media_capture and self.media_capture.isOpened():
                     # PERFORM TEST READ: essential on Windows to detect silent handle failures
                     misc_helpers.seek_frame(self.media_capture, seek_frame)
-                    ret, _ = self.media_capture.read()
+                    ret, _ = misc_helpers.read_frame_gpu(self.media_capture)
                     if ret:
                         # Success! Reset counters and seek back to the target frame.
                         self.current_frame_number = seek_frame

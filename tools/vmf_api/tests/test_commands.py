@@ -570,7 +570,9 @@ class DestructiveActionTests(unittest.TestCase):
     def test_media_check(self):
         from types import SimpleNamespace as NS
 
-        vp = lambda **k: NS(video_processor=NS(**k))
+        def vp(**k):
+            return NS(video_processor=NS(**k))
+
         self.assertTrue(commands._media_ok(vp(media_path="x.mp4", file_type="video")))
         self.assertTrue(commands._media_ok(vp(media_path="x.png", file_type="image")))
         self.assertFalse(commands._media_ok(vp(media_path="0", file_type="webcam")))

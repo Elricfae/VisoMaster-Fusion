@@ -56,13 +56,13 @@ def _get_sobel_kernels(device):
 class EquirectangularConverter:
     def __init__(
         self,
-        equirect_image_data_rgb_uint8: np.ndarray,
+        equirect_image_data_rgb_uint8: np.ndarray | torch.Tensor,
         device: torch.device,
         geometry: VRGeometry | None = None,
     ):
         """
         Initializes with equirectangular image data.
-        :param equirect_image_data_rgb_uint8: NumPy array (H, W, C) in RGB, uint8 format.
+        :param equirect_image_data_rgb_uint8: NumPy array (H, W, C) or Torch tensor (C, H, W) in RGB, uint8 format.
         :param device: PyTorch device to use.
         :param geometry: how the frame's pixels map to directions.  Defaults to the
             historical VR180 side-by-side assumption (each eye 180°, whole frame a
@@ -70,12 +70,17 @@ class EquirectangularConverter:
         """
 
         self.device = device
-        # Convert NumPy HWC RGB to Torch CHW RGB tensor on GPU
-        self.equirect_tensor_cxhxw_rgb_uint8 = (
-            torch.from_numpy(equirect_image_data_rgb_uint8)
-            .permute(2, 0, 1)
-            .to(self.device)
-        )
+        if isinstance(equirect_image_data_rgb_uint8, torch.Tensor):
+            self.equirect_tensor_cxhxw_rgb_uint8 = (
+                equirect_image_data_rgb_uint8.to(self.device).contiguous().clone()
+            )
+        else:
+            # Convert NumPy HWC RGB to Torch CHW RGB tensor on GPU
+            self.equirect_tensor_cxhxw_rgb_uint8 = (
+                torch.from_numpy(equirect_image_data_rgb_uint8)
+                .permute(2, 0, 1)
+                .to(self.device)
+            )
 
         self.channels, self.height, self.width = (
             self.equirect_tensor_cxhxw_rgb_uint8.shape
@@ -125,13 +130,13 @@ class EquirectangularConverter:
 class PerspectiveConverter:
     def __init__(
         self,
-        base_equirect_image_data_rgb_uint8: np.ndarray,
+        base_equirect_image_data_rgb_uint8: np.ndarray | torch.Tensor,
         device: torch.device,
         geometry: VRGeometry | None = None,
     ):
         """
         Initializes with the base equirectangular image data (used for dimensions and as background).
-        :param base_equirect_image_data_rgb_uint8: NumPy array (H, W, C) in RGB, uint8 format.
+        :param base_equirect_image_data_rgb_uint8: NumPy array (H, W, C) or Torch tensor (C, H, W) in RGB, uint8 format.
         :param device: PyTorch device to use.
         :param geometry: how the frame's pixels map to directions.  Defaults to the
             historical VR180 side-by-side assumption.
@@ -141,7 +146,10 @@ class PerspectiveConverter:
         # Only store dimensions — the full pixel data is never used after __init__.
         # Previously a full GPU uint8 tensor was kept alive permanently, wasting
         # ~5–25 MB of VRAM per cached PerspectiveConverter instance.
-        h, w, c = base_equirect_image_data_rgb_uint8.shape
+        if isinstance(base_equirect_image_data_rgb_uint8, torch.Tensor):
+            c, h, w = base_equirect_image_data_rgb_uint8.shape
+        else:
+            h, w, c = base_equirect_image_data_rgb_uint8.shape
         self.orig_height: int = h
         self.orig_width: int = w
         self.orig_channels: int = c

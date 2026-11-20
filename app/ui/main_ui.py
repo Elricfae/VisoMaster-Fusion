@@ -703,7 +703,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.scan_progress_dialog.setAutoClose(False)
         self.scan_progress_dialog.setAutoReset(False)
         self.scan_progress_dialog.close()
-        
 
     def _configure_output_folder_controls(self):
         style = self.style()
@@ -1344,9 +1343,21 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 if icon_size is not None:
                     button.setIconSize(icon_size)
 
-        style(transport_buttons, lambda _b: max(32, transport_icon_size.width() + 18), transport_icon_size)
-        style(marker_buttons, lambda _b: max(30, marker_icon_size.width() + 16), marker_icon_size)
-        style(icon_utility_buttons, lambda _b: max(30, utility_icon_size.width() + 16), utility_icon_size)
+        style(
+            transport_buttons,
+            lambda _b: max(32, transport_icon_size.width() + 18),
+            transport_icon_size,
+        )
+        style(
+            marker_buttons,
+            lambda _b: max(30, marker_icon_size.width() + 16),
+            marker_icon_size,
+        )
+        style(
+            icon_utility_buttons,
+            lambda _b: max(30, utility_icon_size.width() + 16),
+            utility_icon_size,
+        )
         self.liveSoundButton.setIconSize(QtCore.QSize(24, 24))
         self.theatreModeButton.setIconSize(QtCore.QSize(28, 28))
         style(
@@ -2134,7 +2145,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         if save_loc is not None:
             save_loc[0].setAlignment(
                 self.saveImageButton,
-                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                QtCore.Qt.AlignmentFlag.AlignLeft
+                | QtCore.Qt.AlignmentFlag.AlignVCenter,
             )
 
         # Tighten spacing around the groups.
@@ -2169,7 +2181,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         while tab is not None and not isinstance(tab, QtWidgets.QTabWidget):
             tab = tab.parentWidget()
         if tab is not None:
-            for corner in (QtCore.Qt.Corner.TopRightCorner, QtCore.Qt.Corner.TopLeftCorner):
+            for corner in (
+                QtCore.Qt.Corner.TopRightCorner,
+                QtCore.Qt.Corner.TopLeftCorner,
+            ):
                 w = tab.cornerWidget(corner)
                 if w is not None:
                     tab.setCornerWidget(None, corner)

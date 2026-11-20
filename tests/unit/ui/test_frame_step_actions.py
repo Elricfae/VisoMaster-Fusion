@@ -64,9 +64,10 @@ def test_navigation_buttons_step_exactly_one_frame(qapp, monkeypatch):
     assert layout.indexOf(window.previousFrameStepButton) < layout.indexOf(
         window.frameRewindButton
     )
-    assert layout.indexOf(window.nextFrameStepButton) == layout.indexOf(
-        window.frameAdvanceButton
-    ) + 1
+    assert (
+        layout.indexOf(window.nextFrameStepButton)
+        == layout.indexOf(window.frameAdvanceButton) + 1
+    )
 
 
 def test_frame_step_controls_are_not_added_twice(qapp):

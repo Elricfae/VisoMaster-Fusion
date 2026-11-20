@@ -15,7 +15,6 @@ import kornia.geometry.transform as kgm
 from torchvision.transforms import v2
 import torchvision
 
-import cv2
 import numpy as np
 
 from app.processors.utils import faceutil
@@ -70,7 +69,7 @@ class FrameWorker(threading.Thread):
         worker_id: int = -1,
         worker_stream: torch.cuda.Stream | None = None,
         # Single-frame worker args
-        frame: np.ndarray | None = None,
+        frame: np.ndarray | torch.Tensor | None = None,
         frame_number: int = -1,
         is_single_frame: bool = False,
     ) -> None:
@@ -505,6 +504,23 @@ class FrameWorker(threading.Thread):
                     self.main_window.editFacesButton.isChecked()
                 )
 
+                # Keep the processed output tensor directly in VRAM when NVENC GPU
+                # encoding is active (eliminating full-frame GPU->CPU PCIe download).
+                is_export_active = bool(
+                    self.video_processor.recording
+                    or self.video_processor.is_processing_segments
+                )
+                encoder = getattr(self.video_processor, "encoder", None)
+                keep_output_on_gpu = (
+                    not self.is_single_frame
+                    and self.video_processor.file_type != "webcam"
+                    and is_export_active
+                    and bool(getattr(encoder, "is_gpu_encoder", False))
+                    and not local_control_state.get(
+                        "SendVirtCamFramesEnableToggle", False
+                    )
+                )
+
                 # Determine if processing is needed
                 needs_processing = (
                     local_control_state.get("swap_enabled", True)
@@ -518,21 +534,40 @@ class FrameWorker(threading.Thread):
                 )
 
                 if needs_processing:
-                    # Ensure input frame is C-contiguous for PyTorch/OpenCV compatibility
-                    if not self.frame.flags["C_CONTIGUOUS"]:
+                    # Ensure CPU input frame is C-contiguous for PyTorch/OpenCV compatibility
+                    if (
+                        isinstance(self.frame, np.ndarray)
+                        and not self.frame.flags["C_CONTIGUOUS"]
+                    ):
                         self.frame = np.ascontiguousarray(self.frame)
 
-                    # Process Frame (returns BGR, uint8)
-                    processed_frame_bgr_np_uint8 = self.process_frame(
-                        local_control_state, self.stop_event
+                    # Process Frame: returns CUDA [3, H, W] RGB uint8 when keep_output_on_gpu,
+                    # otherwise CPU C-contiguous BGR uint8 numpy array.
+                    processed_out = self.process_frame(
+                        local_control_state,
+                        self.stop_event,
+                        keep_output_on_gpu=keep_output_on_gpu,
                     )
 
-                    # Ensure output is C-contiguous for Qt display
-                    self.frame = np.ascontiguousarray(processed_frame_bgr_np_uint8)
+                    if isinstance(processed_out, torch.Tensor):
+                        self.frame = processed_out
+                    else:
+                        self.frame = np.ascontiguousarray(processed_out)
                 else:
-                    # If no processing, just convert RGB to BGR for display
-                    self.frame = self.frame[..., ::-1]
-                    self.frame = np.ascontiguousarray(self.frame)
+                    if isinstance(self.frame, torch.Tensor):
+                        if not keep_output_on_gpu:
+                            # Convert GPU RGB [3, H, W] -> CPU BGR [H, W, 3] directly
+                            self.frame = (
+                                self.frame[[2, 1, 0]]
+                                .permute(1, 2, 0)
+                                .contiguous()
+                                .cpu()
+                                .numpy()
+                            )
+                    else:
+                        # If no processing on CPU frame, convert RGB to BGR for display
+                        self.frame = self.frame[..., ::-1]
+                        self.frame = np.ascontiguousarray(self.frame)
 
                 # Sync thread before returning to cpu.
                 # Non-spinning wait: this fires once per frame, so the event
@@ -599,10 +634,21 @@ class FrameWorker(threading.Thread):
             if (
                 not self.stop_event.is_set()
                 and not self.is_single_frame
-                and isinstance(_fallback_frame_rgb, np.ndarray)
+                and isinstance(_fallback_frame_rgb, (np.ndarray, torch.Tensor))
             ):
                 try:
-                    fallback_bgr = np.ascontiguousarray(_fallback_frame_rgb[..., ::-1])
+                    if isinstance(_fallback_frame_rgb, torch.Tensor):
+                        fallback_bgr = (
+                            _fallback_frame_rgb[[2, 1, 0]]
+                            .permute(1, 2, 0)
+                            .contiguous()
+                            .cpu()
+                            .numpy()
+                        )
+                    else:
+                        fallback_bgr = np.ascontiguousarray(
+                            _fallback_frame_rgb[..., ::-1]
+                        )
                     if self.video_processor.file_type == "webcam":
                         self.video_processor.webcam_frame_processed_signal.emit(
                             fallback_bgr
@@ -663,17 +709,28 @@ class FrameWorker(threading.Thread):
             str(control_global["RecognitionModelSelection"]),
         )
 
-    def process_frame(self, control: dict, stop_event: threading.Event):
+    def process_frame(
+        self,
+        control: dict,
+        stop_event: threading.Event,
+        keep_output_on_gpu: bool = False,
+    ):
         """
         Routing method:
-        - Checks inputs.
+        - Checks inputs (either CUDA [3, H, W] RGB uint8 tensor or CPU [H, W, 3] RGB uint8 ndarray).
         - Sets up transforms.
         - Dispatches to either VR180 or Standard processing logic.
         - Applies common global enhancers.
+        - When ``keep_output_on_gpu=True``, returns the CUDA [3, H, W] RGB uint8 tensor directly
+          for zero-copy NVENC encoding; otherwise returns a CPU BGR uint8 numpy array.
         """
         # Check 1: At the very beginning
         if stop_event.is_set():
             assert self.frame is not None
+            if isinstance(self.frame, torch.Tensor):
+                if keep_output_on_gpu:
+                    return self.frame
+                return self.frame[[2, 1, 0]].permute(1, 2, 0).contiguous().cpu().numpy()
             return self.frame[..., ::-1]  # Return original BGR frame
 
         # Keep last frame number for reference (this is the single-frame path read; pool
@@ -701,20 +758,29 @@ class FrameWorker(threading.Thread):
         if self._last_scaling_control != _scaling_keys:
             self.set_scaling_transforms(control)
             self._last_scaling_control = _scaling_keys
-        img_numpy_rgb_uint8 = self.frame
-        assert img_numpy_rgb_uint8 is not None, "frame must be set before processing"
+
+        input_frame = self.frame
+        assert input_frame is not None, "frame must be set before processing"
+        input_is_gpu_tensor = isinstance(input_frame, torch.Tensor)
 
         compare_mode_active = self.is_view_face_mask or self.is_view_face_compare
-        img_h, img_w = (
-            int(img_numpy_rgb_uint8.shape[0]),
-            int(img_numpy_rgb_uint8.shape[1]),
-        )
+        if input_is_gpu_tensor:
+            img_h, img_w = int(input_frame.shape[1]), int(input_frame.shape[2])
+            img_numpy_rgb_uint8: np.ndarray | None = None
+        else:
+            img_h, img_w = int(input_frame.shape[0]), int(input_frame.shape[1])
+            img_numpy_rgb_uint8 = input_frame
+
         yawnet_enabled = bool(
             control.get("LandmarkDetectToggle", True)
             and control.get("YawNetEnableToggle", False)
         )
+        # Only use the CPU-ROI path when the input frame actually starts on CPU
+        # AND we don't want to keep the full output in VRAM for NVENC encoding.
         can_use_cpu_roi_path = (
-            getattr(self.models_processor, "device_type", "cpu") == "cuda"
+            not input_is_gpu_tensor
+            and not keep_output_on_gpu
+            and getattr(self.models_processor, "device_type", "cpu") == "cuda"
             and img_h >= 512
             and img_w >= 512
             and not control.get("VR180ModeEnableToggle", False)
@@ -729,20 +795,28 @@ class FrameWorker(threading.Thread):
             and not control.get("ShowYawNetRingToggle", False)
         )
 
-        if can_use_cpu_roi_path:
+        if can_use_cpu_roi_path and img_numpy_rgb_uint8 is not None:
             # Keep the full HD/4K frame on CPU; upload/download only tight face ROIs.
             return self.standard_processor.process_standard_frame_roi_cpu(
                 img_numpy_rgb_uint8, control, stop_event
             )
 
-        # Full-frame GPU path (VR180, FrameEnhancer, FaceDetailer, Rotation, YawNet, Overlays, <512px)
-        # Preserve pinned host DMA transfer instead of copying via CPU transpose.
-        processed_tensor_rgb_uint8 = (
-            torch.from_numpy(img_numpy_rgb_uint8)
-            .to(self.models_processor.device, non_blocking=True)
-            .permute(2, 0, 1)
-            .contiguous()
-        )
+        # Full-frame GPU path (zero-copy when decoded via PyNvVideoCodec NVDEC!)
+        if input_is_gpu_tensor:
+            processed_tensor_rgb_uint8 = input_frame
+            if processed_tensor_rgb_uint8.device != self.models_processor.device:
+                processed_tensor_rgb_uint8 = processed_tensor_rgb_uint8.to(
+                    self.models_processor.device, non_blocking=True
+                )
+        else:
+            assert img_numpy_rgb_uint8 is not None
+            # Preserve pinned host DMA transfer instead of copying via CPU transpose.
+            processed_tensor_rgb_uint8 = (
+                torch.from_numpy(img_numpy_rgb_uint8)
+                .to(self.models_processor.device, non_blocking=True)
+                .permute(2, 0, 1)
+                .contiguous()
+            )
 
         # --- ROUTING LOGIC ---
         if control.get("VR180ModeEnableToggle", False):
@@ -760,17 +834,32 @@ class FrameWorker(threading.Thread):
         if control.get("FrameEnhancerEnableToggle", False) and not compare_mode_active:
             # Check 5: Before final heavy operation
             if stop_event.is_set():
-                assert img_numpy_rgb_uint8 is not None
-                return cv2.cvtColor(img_numpy_rgb_uint8, cv2.COLOR_RGB2BGR)
+                if keep_output_on_gpu:
+                    return processed_tensor_rgb_uint8
+                return (
+                    processed_tensor_rgb_uint8[[2, 1, 0]]
+                    .permute(1, 2, 0)
+                    .contiguous()
+                    .cpu()
+                    .numpy()
+                )
 
             processed_tensor_rgb_uint8 = self.function_worker.enhance_core(
                 processed_tensor_rgb_uint8, control=control
             )
 
-        final_img_np_rgb_uint8 = (
-            processed_tensor_rgb_uint8.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+        if keep_output_on_gpu:
+            return processed_tensor_rgb_uint8.contiguous()
+
+        # Convert RGB [3, H, W] -> BGR [H, W, 3] on GPU before downloading once (skips CPU cvtColor).
+        return (
+            processed_tensor_rgb_uint8[[2, 1, 0]]
+            .permute(1, 2, 0)
+            .contiguous()
+            .cpu()
+            .numpy()
+            .astype(np.uint8, copy=False)
         )
-        return cv2.cvtColor(final_img_np_rgb_uint8, cv2.COLOR_RGB2BGR)
 
     def get_face_similarity_tform(
         self, swapper_model: str, kps_5: np.ndarray

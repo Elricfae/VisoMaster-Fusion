@@ -103,8 +103,8 @@ def test_osdface_is_exposed_as_face_restorer():
     assert "OSDFacePromptEncoder" in MODELS_TOGGLE_MAP
     assert "OSDFacePromptEncoder" in fp16_safe_models_list
     assert "OSDFaceVAEEncoder" in fp16_safe_models_list
-    assert "OSDFaceUNet" not in fp16_safe_models_list
-    assert "OSDFaceVAEDecoder" not in fp16_safe_models_list
+    assert "OSDFaceUNet" in fp16_safe_models_list
+    assert "OSDFaceVAEDecoder" in fp16_safe_models_list
     assert FaceRestorers.osdface_model_names == (
         "OSDFacePromptEncoder",
         "OSDFaceVAEEncoder",

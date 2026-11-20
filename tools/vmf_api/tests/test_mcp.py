@@ -65,6 +65,8 @@ def dummy(schema: dict):
             ),
             "string",
         )
+    if not isinstance(t, str):
+        return "x"
     return {
         "string": "x",
         "integer": 1,

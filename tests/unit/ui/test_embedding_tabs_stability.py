@@ -81,7 +81,7 @@ def test_switch_drag_close_preserves_assignments(window):
 def test_restore_all_tabs_without_external_files(window):
     w = window
     a = add_button(w, "a")
-    b = add_button(w, "b")
+    add_button(w, "b")
     snapshot = {
         "tabs": [
             {"title": "A", "embedding_ids": ["a"]},

@@ -58,8 +58,9 @@ _STUBS = [
 for _s in _STUBS:
     if _s not in sys.modules:
         sys.modules[_s] = _stub(_s)
-if isinstance(sys.modules.get("PySide6.QtCore"), MagicMock):
-    sys.modules["PySide6.QtCore"].Slot = lambda *a, **kw: lambda fn: fn
+_qt_core = sys.modules.get("PySide6.QtCore")
+if isinstance(_qt_core, MagicMock):
+    _qt_core.Slot = lambda *a, **kw: lambda fn: fn
 
 from app.helpers.miscellaneous import ParametersDict  # noqa: E402
 

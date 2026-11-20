@@ -248,6 +248,41 @@ def set_video_playback_fps(main_window: "MainWindow", set_video_fps=False):
         )
 
 
+def handle_pynv_decode_toggle(main_window: "MainWindow", enabled: bool) -> None:
+    """Switch active video decoder between PyNvVideoCodec NVDEC (VRAM) and OpenCV CPU."""
+    prefer_gpu = bool(enabled)
+    main_window.control["PyNvVideoCodecDecodeToggle"] = prefer_gpu
+    vp = getattr(main_window, "video_processor", None)
+    if (
+        vp is None
+        or getattr(vp, "file_type", None) != "video"
+        or not getattr(vp, "media_path", None)
+    ):
+        return
+
+    if getattr(vp, "processing", False) or getattr(vp, "is_processing_segments", False):
+        backend = "PyNvVideoCodec (GPU VRAM)" if prefer_gpu else "OpenCV (CPU)"
+        print(
+            f"[INFO] Video decoding backend set to {backend}; "
+            "it will take effect after playback/recording stops."
+        )
+        return
+
+    target_frame = max(0, int(getattr(vp, "current_frame_number", 0) or 0))
+    if vp._reopen_video_capture(target_frame):
+        # Clear cached CPU raw frame so next refresh uses the newly selected backend cleanly.
+        vp._cached_raw_frame_bgr = None
+        vp._cached_raw_frame_number = None
+        backend = (
+            "PyNvVideoCodec NVDEC (VRAM)"
+            if getattr(vp.media_capture, "is_gpu_backed", False)
+            else "OpenCV (CPU)"
+        )
+        print(
+            f"[INFO] Switched active video decoder to {backend} at frame {target_frame}."
+        )
+
+
 def toggle_virtualcam(main_window: "MainWindow", toggle_value=False):
     video_processor = main_window.video_processor
     if toggle_value:

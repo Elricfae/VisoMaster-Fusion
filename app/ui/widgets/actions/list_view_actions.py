@@ -1,6 +1,6 @@
 from collections import deque
 from functools import partial
-from typing import TYPE_CHECKING, Dict, Type
+from typing import TYPE_CHECKING, Dict, Type, cast
 from pathlib import Path
 import sys
 import os
@@ -19,6 +19,7 @@ from app.ui.widgets import ui_workers
 from app.ui.widgets import sortable_widgets
 
 if TYPE_CHECKING:
+    from app.helpers.typing_helper import FacesParametersTypes
     from app.ui.main_ui import MainWindow
 
 _WORKER_STOP_TIMEOUT_MS = 1000
@@ -1521,7 +1522,7 @@ def _reset_selected_target_video_if_removed(main_window: "MainWindow") -> None:
     if hasattr(main_window, "cur_selected_target_face_button"):
         main_window.cur_selected_target_face_button = None
     if hasattr(main_window, "parameters"):
-        main_window.parameters = {}
+        main_window.parameters = cast("FacesParametersTypes", {})
     scene = getattr(main_window, "scene", None)
     if scene is not None:
         try:
@@ -1544,7 +1545,7 @@ def _prune_missing_auto_loaded_target_media(
     item_fn = getattr(list_widget, "item", None)
     item_widget_fn = getattr(list_widget, "itemWidget", None)
     take_fn = getattr(list_widget, "takeItem", None)
-    if not all(callable(f) for f in (count_fn, item_fn, take_fn)):
+    if not (callable(count_fn) and callable(item_fn) and callable(take_fn)):
         return
 
     removed_any = False
@@ -1744,7 +1745,7 @@ def _remove_subfolder_target_media(main_window: "MainWindow", folder: str) -> No
     item_fn = getattr(list_widget, "item", None)
     item_widget_fn = getattr(list_widget, "itemWidget", None)
     take_fn = getattr(list_widget, "takeItem", None)
-    if not all(callable(f) for f in (count_fn, item_fn, take_fn)):
+    if not (callable(count_fn) and callable(item_fn) and callable(take_fn)):
         return
 
     removed_any = False
@@ -1831,7 +1832,7 @@ def _clear_auto_loaded_target_media(main_window: "MainWindow") -> None:
         item_fn = getattr(list_widget, "item", None)
         item_widget_fn = getattr(list_widget, "itemWidget", None)
         take_fn = getattr(list_widget, "takeItem", None)
-        if not all(callable(f) for f in (count_fn, item_fn, take_fn)):
+        if not (callable(count_fn) and callable(item_fn) and callable(take_fn)):
             return
 
         for i in range(count_fn() - 1, -1, -1):

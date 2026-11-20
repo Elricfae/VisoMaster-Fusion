@@ -84,26 +84,36 @@ def add_screenshot_controls(main_window: "MainWindow") -> None:
     # Create hidden buttons to maintain compatibility with existing signal logic
     main_window.takeScreenshotButton = QtWidgets.QPushButton("Take SS", parent)
     main_window.takeScreenshotButton.setVisible(False)
-    main_window.takeScreenshotButton.clicked.connect(lambda: take_screenshot(main_window))
+    main_window.takeScreenshotButton.clicked.connect(
+        lambda: take_screenshot(main_window)
+    )
 
     main_window.showScreenshotButton = QtWidgets.QPushButton("Show SS", parent)
     main_window.showScreenshotButton.setCheckable(True)
     main_window.showScreenshotButton.setVisible(False)
-    main_window.showScreenshotButton.toggled.connect(lambda checked: show_screenshot(main_window, checked))
+    main_window.showScreenshotButton.toggled.connect(
+        lambda checked: show_screenshot(main_window, checked)
+    )
 
     main_window.saveScreenshotButton = QtWidgets.QPushButton("Save SS", parent)
     main_window.saveScreenshotButton.setVisible(False)
-    main_window.saveScreenshotButton.clicked.connect(lambda: save_screenshot(main_window))
+    main_window.saveScreenshotButton.clicked.connect(
+        lambda: save_screenshot(main_window)
+    )
 
     # Create the new unified menu button
     main_window.screenshotMenuButton = QtWidgets.QToolButton(parent)
     main_window.screenshotMenuButton.setObjectName("screenshotMenuButton")
     main_window.screenshotMenuButton.setText("Screenshot")
     main_window.screenshotMenuButton.setIcon(QtGui.QIcon(":/media/media/image.png"))
-    main_window.screenshotMenuButton.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-    main_window.screenshotMenuButton.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    main_window.screenshotMenuButton.setPopupMode(
+        QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+    )
+    main_window.screenshotMenuButton.setToolButtonStyle(
+        QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+    )
     main_window.screenshotMenuButton.setAutoRaise(True)
-    
+
     menu = QtWidgets.QMenu(main_window.screenshotMenuButton)
 
     take_action = menu.addAction("Take Screenshot")
@@ -111,11 +121,17 @@ def add_screenshot_controls(main_window: "MainWindow") -> None:
 
     main_window.showScreenshotAction = menu.addAction("Show Screenshot")
     main_window.showScreenshotAction.setCheckable(True)
-    main_window.showScreenshotAction.triggered.connect(main_window.showScreenshotButton.setChecked)
-    main_window.showScreenshotButton.toggled.connect(main_window.showScreenshotAction.setChecked)
+    main_window.showScreenshotAction.triggered.connect(
+        main_window.showScreenshotButton.setChecked
+    )
+    main_window.showScreenshotButton.toggled.connect(
+        main_window.showScreenshotAction.setChecked
+    )
 
     main_window.saveScreenshotAction = menu.addAction("Save Screenshot")
-    main_window.saveScreenshotAction.triggered.connect(main_window.saveScreenshotButton.click)
+    main_window.saveScreenshotAction.triggered.connect(
+        main_window.saveScreenshotButton.click
+    )
 
     main_window.screenshotMenuButton.setMenu(menu)
 
@@ -141,7 +157,12 @@ def add_screenshot_controls(main_window: "MainWindow") -> None:
         main_window.screenshotMenuButton.setMaximumHeight(target_height)
 
         # Format width for the menu button
-        text_width = QtGui.QFontMetrics(main_window.screenshotMenuButton.font()).horizontalAdvance(main_window.screenshotMenuButton.text()) + 40
+        text_width = (
+            QtGui.QFontMetrics(
+                main_window.screenshotMenuButton.font()
+            ).horizontalAdvance(main_window.screenshotMenuButton.text())
+            + 40
+        )
         main_window.screenshotMenuButton.setMinimumWidth(text_width)
         main_window.screenshotMenuButton.setMaximumWidth(120)
 
@@ -224,7 +245,7 @@ def show_screenshot(main_window: "MainWindow", visible: bool) -> bool:
         display_item = graphics_view_actions.ensure_screenshot_overlay_item(main_window)
         display_item.setPixmap(main_window.session_screenshot)
         display_item.show()
-        
+
         show_action = getattr(main_window, "showScreenshotAction", None)
         if show_action is not None:
             show_action.blockSignals(True)
@@ -236,7 +257,7 @@ def show_screenshot(main_window: "MainWindow", visible: bool) -> bool:
         if overlay_item is not None:
             overlay_item.hide()
         display_item = graphics_view_actions.get_base_pixmap_item(main_window)
-        
+
         show_action = getattr(main_window, "showScreenshotAction", None)
         if show_action is not None:
             show_action.blockSignals(True)
@@ -246,9 +267,7 @@ def show_screenshot(main_window: "MainWindow", visible: bool) -> bool:
 
     if display_item is not None:
         scene_rect = display_item.boundingRect()
-        graphics_view_actions.fit_image_to_view(
-            main_window, display_item, scene_rect
-        )
+        graphics_view_actions.fit_image_to_view(main_window, display_item, scene_rect)
     return True
 
 

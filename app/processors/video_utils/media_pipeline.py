@@ -8,7 +8,7 @@ import cv2
 import psutil
 import numpy
 import torch
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List, cast
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List, Union, cast
 
 # --- QT & FFmpeg Logger Suppression ---
 # Silences the internal C++ demuxer probe data (Input #0...) from bleeding into the python console.
@@ -106,17 +106,19 @@ class MediaPipeline(QObject):
         self.ui_state_is_dirty: bool = True
 
         # --- Buffers ---
-        # Changed to store ONLY numpy arrays to prevent VRAM memory bloat
-        self.frames_to_display: Dict[int, numpy.ndarray] = {}
+        # Holds either CPU BGR numpy arrays (playback/fallback) or CUDA [3, H, W] RGB
+        # tensors (zero-copy NVENC recording path, tightly VRAM-bounded).
+        self.frames_to_display: Dict[int, Union[numpy.ndarray, torch.Tensor]] = {}
         self.webcam_frames_to_display: queue.Queue[numpy.ndarray] = queue.Queue()
         self.max_frames_to_display_size: int = 8
         self._wrap_frame_target: int = -1  # Used to synchronize seamless looping
+        self._last_gpu_preview_update_sec: float = 0.0
 
         # --- Intermediate Stage 1 to Stage 2 Buffer (Decoder to Detector) ---
         dynamic_raw_queue_size: int = max(5, self.vp.num_threads // 2)
-        self.raw_frame_queue: queue.Queue[Optional[Tuple[int, numpy.ndarray]]] = (
-            queue.Queue(maxsize=dynamic_raw_queue_size)
-        )
+        self.raw_frame_queue: queue.Queue[
+            Optional[Tuple[int, Union[numpy.ndarray, torch.Tensor]]]
+        ] = queue.Queue(maxsize=dynamic_raw_queue_size)
 
         # --- Segment Playback State ---
         self.segment_jumps: Dict[int, int] = {}
@@ -160,17 +162,24 @@ class MediaPipeline(QObject):
     # --- BUFFER MANAGEMENT ---
 
     def _get_dynamic_max_buffer_size(
-        self, frame_shape: Optional[Tuple[int, ...]] = None
+        self,
+        frame_shape: Optional[Tuple[int, ...]] = None,
+        is_gpu_frame: bool = False,
     ) -> int:
-        """Calculates an adaptive maximum buffer limit based on active system RAM and frame dimensions.
+        """Calculates an adaptive maximum buffer limit based on RAM/VRAM and frame dimensions.
 
         Prevents high-resolution media (4K, 8K, VR180) from consuming excessive memory while ensuring
         worker threads are never starved of tasks.
         """
         num_threads: int = self.vp.num_threads
-        # Minimum required buffer depth to prevent 5-frame worker thread starvation
-        min_required_buffer: int = max(num_threads * 2, 8)
         default_max_buffer: int = self.vp.max_display_buffer_size
+
+        if is_gpu_frame:
+            # Tighter depth when frames live in VRAM so 4K/8K/VR180 never exhaust GPU memory.
+            min_required_buffer: int = max(num_threads + 2, 4)
+        else:
+            # Minimum required buffer depth to prevent 5-frame worker thread starvation
+            min_required_buffer = max(num_threads * 2, 8)
 
         if not frame_shape or len(frame_shape) < 2:
             return default_max_buffer
@@ -183,16 +192,29 @@ class MediaPipeline(QObject):
         if frame_bytes <= 0:
             return default_max_buffer
 
-        # Budget 2.5 GB specifically for the uncompressed frame buffer queue
-        BUFFER_RAM_BUDGET_BYTES: int = 2500 * 1024 * 1024  # 2.5 GB
+        if is_gpu_frame:
+            budget_bytes: int = 768 * 1024 * 1024  # 768 MB VRAM cap for queued frames
+            if torch.cuda.is_available() and torch.cuda.is_initialized():
+                try:
+                    free_vram, _ = torch.cuda.mem_get_info()
+                    budget_bytes = min(
+                        budget_bytes, max(256 * 1024 * 1024, int(free_vram * 0.20))
+                    )
+                except Exception:
+                    pass
+        else:
+            # Budget 2.5 GB specifically for the uncompressed frame buffer queue
+            budget_bytes = 2500 * 1024 * 1024  # 2.5 GB
 
         # Compute max capacity based on resolution
-        dynamic_cap: int = int(BUFFER_RAM_BUDGET_BYTES / frame_bytes)
+        dynamic_cap: int = int(budget_bytes / frame_bytes)
 
-        # Clamp between min_required_buffer (prevents stutter) and default_max_buffer (prevents RAM bloat)
+        # Clamp between min_required_buffer (prevents stutter) and default_max_buffer (prevents memory bloat)
         return max(min_required_buffer, min(dynamic_cap, default_max_buffer))
 
-    def store_frame_to_display(self, frame_number: int, frame: numpy.ndarray) -> None:
+    def store_frame_to_display(
+        self, frame_number: int, frame: Union[numpy.ndarray, torch.Tensor]
+    ) -> None:
         """Stores a processed video/image frame from a worker thread into the consumer dictionary."""
         if not self.vp.processing and not self.vp.is_processing_segments:
             del frame
@@ -304,8 +326,15 @@ class MediaPipeline(QObject):
         else:
             # Decoupled 2-stage pipeline for video/segments
 
-            # --- DYNAMIC RAW QUEUE SIZING (RAM OPTIMIZED) ---
-            dynamic_raw_queue_size: int = max(5, self.vp.num_threads // 2)
+            # --- DYNAMIC RAW QUEUE SIZING (RAM / VRAM OPTIMIZED) ---
+            is_gpu_decode = not self.vp.ffmpeg_input_sp and bool(
+                getattr(self.vp.media_capture, "is_gpu_backed", False)
+            )
+            if is_gpu_decode:
+                dynamic_raw_queue_size: int = max(2, min(4, self.vp.num_threads))
+            else:
+                dynamic_raw_queue_size = max(5, self.vp.num_threads // 2)
+            self._last_gpu_preview_update_sec = 0.0
 
             # Safely reset the intermediate queue AND update its maxsize in-place
             # This prevents reference-bleeding because we never destroy the original queue object.
@@ -454,11 +483,11 @@ class MediaPipeline(QObject):
                     cached_target_height = self.vp._get_target_input_height()
                 target_height = cached_target_height
 
-                # 4. Read Frame
+                # 4. Read Frame (PyNvVideoCodec VRAM path when available, OpenCV/FFmpeg CPU fallback)
                 if self.vp.ffmpeg_input_sp:
-                    ret, frame_bgr = self.vp._read_frame_from_ffmpeg_input_stream()
+                    ret, frame_raw = self.vp._read_frame_from_ffmpeg_input_stream()
                 else:
-                    ret, frame_bgr = misc_helpers.read_frame(
+                    ret, frame_raw = misc_helpers.read_frame_gpu(
                         self.vp.media_capture,
                         self.vp.media_rotation,
                         preview_target_height=target_height,
@@ -577,7 +606,7 @@ class MediaPipeline(QObject):
                     )
                     continue
 
-                if frame_bgr is None:
+                if frame_raw is None:
                     continue
 
                 self.consecutive_read_errors = 0
@@ -588,7 +617,7 @@ class MediaPipeline(QObject):
                 while stop_flag_check():
                     try:
                         self.raw_frame_queue.put(
-                            (frame_num_to_process, frame_bgr), timeout=0.5
+                            (frame_num_to_process, frame_raw), timeout=0.5
                         )
                         self.vp.current_frame_number += 1
                         break
@@ -674,7 +703,7 @@ class MediaPipeline(QObject):
         last_mem_check_time: float = 0.0
         is_ram_safe: bool = True
         is_vram_safe: bool = True
-        cached_shape_for_limit: Optional[Tuple[int, ...]] = None
+        cached_shape_for_limit: Optional[Tuple[Tuple[int, ...], bool]] = None
         dynamic_buffer_limit: int = self.vp.max_display_buffer_size
 
         while stop_flag_check():
@@ -695,14 +724,25 @@ class MediaPipeline(QObject):
                     print("[INFO] Detector Thread: Received poison pill. Exiting loop.")
                     break
 
-                frame_num_to_process, frame_bgr = raw_item
-                current_frame_shape = frame_bgr.shape
+                frame_num_to_process, frame_raw = raw_item
+                is_gpu_frame = isinstance(frame_raw, torch.Tensor)
+                if is_gpu_frame:
+                    # GPU decoded tensor is [C, H, W] RGB uint8; normalize shape to (H, W, C) for budget math
+                    current_frame_shape = (
+                        int(frame_raw.shape[1]),
+                        int(frame_raw.shape[2]),
+                        int(frame_raw.shape[0]),
+                    )
+                else:
+                    current_frame_shape = frame_raw.shape
 
                 # 2. Buffer control (Adaptive VRAM & RAM Safety Net)
-                if current_frame_shape != cached_shape_for_limit:
-                    cached_shape_for_limit = current_frame_shape
+                shape_limit_key = (current_frame_shape, is_gpu_frame)
+                if shape_limit_key != cached_shape_for_limit:
+                    cached_shape_for_limit = shape_limit_key
                     dynamic_buffer_limit = self._get_dynamic_max_buffer_size(
-                        current_frame_shape
+                        current_frame_shape,
+                        is_gpu_frame=is_gpu_frame,
                     )
 
                 while stop_flag_check():
@@ -799,37 +839,47 @@ class MediaPipeline(QObject):
                             else:
                                 local_params_for_worker[face_id] = face_data
 
-                # Zero-copy pinned RGB ring buffer for fast CPU->GPU DMA transfers
-                required_ring_len = dynamic_buffer_limit + self.vp.num_threads + 6
-                if (
-                    not hasattr(self, "_video_pinned_ring_buffer")
-                    or getattr(self, "_video_pinned_ring_shape", None)
-                    != current_frame_shape
-                    or len(getattr(self, "_video_pinned_ring_buffer", []))
-                    < required_ring_len
-                ):
-                    self._video_pinned_ring_shape = current_frame_shape
-                    self._video_pinned_ring_buffer = []
-                    use_pinned = (
-                        torch.cuda.is_available() and torch.cuda.is_initialized()
-                    )
-                    for _ in range(required_ring_len):
-                        if use_pinned:
-                            t = torch.empty(
-                                current_frame_shape, dtype=torch.uint8
-                            ).pin_memory()
-                            self._video_pinned_ring_buffer.append(t.numpy())
-                        else:
-                            self._video_pinned_ring_buffer.append(
-                                numpy.empty(current_frame_shape, dtype=numpy.uint8)
-                            )
-                    self._video_pinned_ring_idx = 0
+                if is_gpu_frame:
+                    # Zero-copy VRAM path: frame_raw is already a [3, H, W] RGB uint8 CUDA tensor.
+                    frame_for_worker: Union[numpy.ndarray, torch.Tensor] = frame_raw
+                    frame_rgb_cpu: Optional[numpy.ndarray] = None
+                    frame_tensor_gpu: Optional[torch.Tensor] = frame_raw
+                else:
+                    # CPU fallback path: Zero-copy pinned RGB ring buffer for fast CPU->GPU DMA transfers
+                    required_ring_len = dynamic_buffer_limit + self.vp.num_threads + 6
+                    if (
+                        not hasattr(self, "_video_pinned_ring_buffer")
+                        or getattr(self, "_video_pinned_ring_shape", None)
+                        != current_frame_shape
+                        or len(getattr(self, "_video_pinned_ring_buffer", []))
+                        < required_ring_len
+                    ):
+                        self._video_pinned_ring_shape = current_frame_shape
+                        self._video_pinned_ring_buffer = []
+                        use_pinned = (
+                            torch.cuda.is_available() and torch.cuda.is_initialized()
+                        )
+                        for _ in range(required_ring_len):
+                            if use_pinned:
+                                t = torch.empty(
+                                    current_frame_shape, dtype=torch.uint8
+                                ).pin_memory()
+                                self._video_pinned_ring_buffer.append(t.numpy())
+                            else:
+                                self._video_pinned_ring_buffer.append(
+                                    numpy.empty(current_frame_shape, dtype=numpy.uint8)
+                                )
+                        self._video_pinned_ring_idx = 0
 
-                frame_rgb = self._video_pinned_ring_buffer[self._video_pinned_ring_idx]
-                self._video_pinned_ring_idx = (self._video_pinned_ring_idx + 1) % len(
-                    self._video_pinned_ring_buffer
-                )
-                cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB, dst=frame_rgb)
+                    frame_rgb_cpu = self._video_pinned_ring_buffer[
+                        self._video_pinned_ring_idx
+                    ]
+                    self._video_pinned_ring_idx = (
+                        self._video_pinned_ring_idx + 1
+                    ) % len(self._video_pinned_ring_buffer)
+                    cv2.cvtColor(frame_raw, cv2.COLOR_BGR2RGB, dst=frame_rgb_cpu)
+                    frame_for_worker = frame_rgb_cpu
+                    frame_tensor_gpu = None
 
                 # 4. Sequential Detection Check
                 is_swap_active = self.main_window.swapfacesButton.isChecked()
@@ -841,10 +891,11 @@ class MediaPipeline(QObject):
                     self.vp._video_had_targets = True
                     is_master_edit_active = self.main_window.editFacesButton.isChecked()
                     bboxes, kpss_5, kpss, kpss_203 = self.vp.sequential_detector.run(
-                        frame_rgb=frame_rgb,
+                        frame_rgb=frame_rgb_cpu,
                         local_control_for_worker=local_control_for_worker,
                         local_params_for_worker=local_params_for_worker,
                         is_master_edit_active=is_master_edit_active,
+                        frame_tensor=frame_tensor_gpu,
                         frame_number=frame_num_to_process,
                     )
                 else:
@@ -859,7 +910,7 @@ class MediaPipeline(QObject):
 
                 task = (
                     frame_num_to_process,
-                    frame_rgb,
+                    frame_for_worker,
                     local_params_for_worker,
                     local_control_for_worker,
                     bboxes,
@@ -1372,7 +1423,9 @@ class MediaPipeline(QObject):
             self.vp.tail_pending_stall_start_sec = 0.0
 
         # 3. Output to System (UI, Encoder, VirtualCam)
-        self.vp.current_frame = frame
+        is_gpu_output_tensor = isinstance(frame, torch.Tensor)
+        if not is_gpu_output_tensor:
+            self.vp.current_frame = frame
 
         # Increment absolute counter strictly upon frame display
         if hasattr(self, "absolute_frames_processed"):
@@ -1384,7 +1437,8 @@ class MediaPipeline(QObject):
                 self.heartbeat_frame_counter = 0
                 self.vp.processing_heartbeat_signal.emit()
 
-        self.vp.send_frame_to_virtualcam(frame)
+        if not is_gpu_output_tensor:
+            self.vp.send_frame_to_virtualcam(frame)
 
         if self.vp.is_processing_segments or self.vp.recording:
             if self.vp.encoder.is_running():
@@ -1398,7 +1452,7 @@ class MediaPipeline(QObject):
                         else "recording"
                     )
                     print(
-                        f"[WARN] Error writing frame {frame_number_to_display} to FFmpeg encoder during {log_prefix}."
+                        f"[WARN] Error writing frame {frame_number_to_display} to video encoder during {log_prefix}."
                     )
             else:
                 log_prefix = (
@@ -1407,7 +1461,7 @@ class MediaPipeline(QObject):
                     else "recording"
                 )
                 print(
-                    f"[WARN] FFmpeg encoder not available for {log_prefix} when trying to write frame {frame_number_to_display}."
+                    f"[WARN] Video encoder not available for {log_prefix} when trying to write frame {frame_number_to_display}."
                 )
 
         if self.vp.file_type != "webcam":
@@ -1420,8 +1474,6 @@ class MediaPipeline(QObject):
                         self.main_window, frame_number_to_display
                     )
 
-        # CREATE QPIXMAP JUST-IN-TIME (GUI Thread safety)
-        pixmap = common_widget_actions.get_pixmap_from_frame(self.main_window, frame)
         slider_display_frame = frame_number_to_display
         if (
             self.vp._used_ffmpeg_cap
@@ -1433,9 +1485,62 @@ class MediaPipeline(QObject):
                 self.vp.output_to_source_frame(frame_number_to_display), src_slider_max
             )
 
-        graphics_view_actions.update_graphics_view(
-            self.main_window, pixmap, slider_display_frame
-        )
+        if is_gpu_output_tensor:
+            # Zero-copy VRAM recording: throttle Qt preview downloads to ~10 Hz and
+            # downscale in VRAM (<= 960p) so full 4K/8K frames never cross PCIe.
+            now_preview = time.perf_counter()
+            should_refresh_preview = (
+                self._last_gpu_preview_update_sec <= 0.0
+                or (now_preview - self._last_gpu_preview_update_sec) >= 0.10
+            )
+            if should_refresh_preview:
+                self._last_gpu_preview_update_sec = now_preview
+                preview_tensor = frame
+                if int(preview_tensor.shape[1]) > 960:
+                    from app.processors.video_utils.nv_video_codec import (
+                        resize_gpu_chw,
+                    )
+
+                    preview_tensor = resize_gpu_chw(preview_tensor, 960)
+                preview_bgr = (
+                    preview_tensor[[2, 1, 0]]
+                    .permute(1, 2, 0)
+                    .contiguous()
+                    .cpu()
+                    .numpy()
+                )
+                self.vp.current_frame = preview_bgr
+                pixmap = common_widget_actions.get_pixmap_from_frame(
+                    self.main_window, preview_bgr
+                )
+                graphics_view_actions.update_graphics_view(
+                    self.main_window, pixmap, slider_display_frame
+                )
+            else:
+                # Keep slider and timestamp responsive every frame with zero GPU->CPU copy
+                if self.main_window.videoSeekSlider.value() != slider_display_frame:
+                    self.main_window.videoSeekSlider.blockSignals(True)
+                    self.main_window.videoSeekSlider.setValue(slider_display_frame)
+                    self.main_window.videoSeekSlider.blockSignals(False)
+                if self.main_window.videoSeekLineEdit.text() != str(
+                    slider_display_frame
+                ):
+                    self.main_window.videoSeekLineEdit.setText(
+                        str(slider_display_frame)
+                    )
+                video_control_actions.update_video_time_line_edit(
+                    self.main_window, slider_display_frame
+                )
+            # Release VRAM frame reference immediately after NVENC + optional preview
+            del frame
+        else:
+            # CREATE QPIXMAP JUST-IN-TIME (GUI Thread safety)
+            pixmap = common_widget_actions.get_pixmap_from_frame(
+                self.main_window, frame
+            )
+            graphics_view_actions.update_graphics_view(
+                self.main_window, pixmap, slider_display_frame
+            )
         self._update_playback_fps_display()
 
         self.main_window.models_processor.check_deferred_unloads(

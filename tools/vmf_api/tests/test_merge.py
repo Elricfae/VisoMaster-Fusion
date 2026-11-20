@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 VMF = HERE.parent
@@ -31,8 +32,8 @@ def load_schema():
 
 SCHEMA = load_schema()
 RULES = merge.PersonalRules.load(VMF / "personal_keys.json")
-CTL_DEFAULTS = {}
-PARAM_DEFAULTS = {}
+CTL_DEFAULTS: dict[str, Any] = {}
+PARAM_DEFAULTS: dict[str, Any] = {}
 for _k, _e in SCHEMA.entries.items():
     ok, v, _ = (
         SCHEMA.validate(_k, _e.default, coerce_strings=True)

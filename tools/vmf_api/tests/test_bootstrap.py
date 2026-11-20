@@ -269,6 +269,7 @@ class LayoutTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location(
             "vmf_api_bootstrap_under_test", VMF / "vmf_api_bootstrap.py"
         )
+        assert spec is not None and spec.loader is not None
         vmf_api_bootstrap = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(vmf_api_bootstrap)
         exe = str(base / "portable-files" / "python" / "python.exe")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 from app.processors.models_data import trt_context_memory_sharing_models
@@ -31,9 +32,12 @@ def _make_processor(
     mp.force_unload_in_progress = False
     mp.deferred_unloads = {}
     mp._models_loading = set()
-    mp.main_window = SimpleNamespace(
-        control={} if control is None else dict(control),
-        video_processor=SimpleNamespace(processing=False, current_frame_number=0),
+    mp.main_window = cast(
+        Any,
+        SimpleNamespace(
+            control={} if control is None else dict(control),
+            video_processor=SimpleNamespace(processing=False, current_frame_number=0),
+        ),
     )
     return mp
 

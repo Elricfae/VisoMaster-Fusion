@@ -21,7 +21,11 @@ from app.processors.workers.frame_worker_standard import StandardProcessor
 
 
 def _make_similarity_matrix(
-    cx: float, cy: float, scale: float = 1.0, angle_deg: float = 0.0, dst_size: int = 512
+    cx: float,
+    cy: float,
+    scale: float = 1.0,
+    angle_deg: float = 0.0,
+    dst_size: int = 512,
 ) -> np.ndarray:
     t = (
         trans.SimilarityTransform(translation=(-cx, -cy))
@@ -103,7 +107,9 @@ def test_inverse_paste_roi_matches_full_frame_composite(cx, cy, scale, angle_deg
     )
     mask = ((1.0 - (xx**2 + yy**2).clamp(0.0, 1.0)) * 1.2).clamp(0.0, 1.0).unsqueeze(0)
 
-    M_fwd = _make_similarity_matrix(cx, cy, scale=scale, angle_deg=angle_deg, dst_size=512)
+    M_fwd = _make_similarity_matrix(
+        cx, cy, scale=scale, angle_deg=angle_deg, dst_size=512
+    )
     M_inv = faceutil.invertAffineTransform(M_fwd).astype(np.float32)
 
     # Full-frame reference
@@ -176,7 +182,15 @@ def test_sequential_detector_uses_downscaled_detect_and_roi_crops_on_4k():
         bbox = np.array([[bx1, by1, bx2, by2]], dtype=np.float32)
         cx, cy = 0.5 * (bx1 + bx2), 0.5 * (by1 + by2)
         kps5 = np.array(
-            [[[cx - 8, cy - 6], [cx + 8, cy - 6], [cx, cy], [cx - 6, cy + 8], [cx + 6, cy + 8]]],
+            [
+                [
+                    [cx - 8, cy - 6],
+                    [cx + 8, cy - 6],
+                    [cx, cy],
+                    [cx - 6, cy + 8],
+                    [cx + 6, cy + 8],
+                ]
+            ],
             dtype=np.float32,
         )
         return bbox, kps5, None
@@ -285,7 +299,9 @@ def test_standard_processor_roi_cpu_only_uploads_face_roi_and_preserves_backgrou
         face_id=1,
         assigned_kv_map=None,
         assigned_input_faces={},
-        assigned_input_embedding={"Inswapper128ArcFace": np.ones(512, dtype=np.float32)},
+        assigned_input_embedding={
+            "Inswapper128ArcFace": np.ones(512, dtype=np.float32)
+        },
         get_embedding=lambda _m: np.ones(512, dtype=np.float32),
     )
 
