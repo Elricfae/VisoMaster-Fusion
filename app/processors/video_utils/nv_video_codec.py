@@ -344,7 +344,9 @@ class NvVideoCapture:
             if prop_id == cv2.CAP_PROP_POS_FRAMES:
                 return float(self._pos)
             if prop_id == cv2.CAP_PROP_BITRATE:
-                return float(self._bitrate_bps / 1000.0) if self._bitrate_bps > 0 else 0.0
+                return (
+                    float(self._bitrate_bps / 1000.0) if self._bitrate_bps > 0 else 0.0
+                )
             if (
                 hasattr(cv2, "CAP_PROP_ORIENTATION_AUTO")
                 and prop_id == cv2.CAP_PROP_ORIENTATION_AUTO
@@ -574,7 +576,9 @@ class NvVideoEncoder:
 
     def is_running(self) -> bool:
         with self._lock:
-            return self._active and self._encoder is not None and self._muxer is not None
+            return (
+                self._active and self._encoder is not None and self._muxer is not None
+            )
 
     def start(
         self,
@@ -898,7 +902,9 @@ class NvVideoEncoder:
             ]
         )
         try:
-            subprocess.run(args, check=True, capture_output=True, text=True, timeout=120)
+            subprocess.run(
+                args, check=True, capture_output=True, text=True, timeout=120
+            )
             try:
                 os.remove(self._mux_target_path)
             except OSError:

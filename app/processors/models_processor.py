@@ -1315,8 +1315,8 @@ class ModelsProcessor(QtCore.QObject):
         """Returns whether hybrid TensorRT context memory sharing is enabled in settings."""
         control = getattr(self.main_window, "control", None)
         if isinstance(control, Mapping):
-            return bool(control.get("TrtContextMemorySharingToggle", True))
-        return True
+            return bool(control.get("TrtContextMemorySharingToggle", False))
+        return False
 
     def has_mismatched_trt_shared_context_models(self, enabled: bool) -> bool:
         """Returns True if any loaded heavy TRT model does not match `enabled`."""

@@ -42,18 +42,18 @@ def _make_processor(
     return mp
 
 
-def test_is_trt_context_memory_sharing_enabled_reads_control_with_true_default():
+def test_is_trt_context_memory_sharing_enabled_reads_control_with_false_default():
     mp = _make_processor(control={})
-    assert mp.is_trt_context_memory_sharing_enabled() is True
-
-    mp.main_window.control["TrtContextMemorySharingToggle"] = False
     assert mp.is_trt_context_memory_sharing_enabled() is False
 
     mp.main_window.control["TrtContextMemorySharingToggle"] = True
     assert mp.is_trt_context_memory_sharing_enabled() is True
 
+    mp.main_window.control["TrtContextMemorySharingToggle"] = False
+    assert mp.is_trt_context_memory_sharing_enabled() is False
+
     mp.main_window = SimpleNamespace(control=None)
-    assert mp.is_trt_context_memory_sharing_enabled() is True
+    assert mp.is_trt_context_memory_sharing_enabled() is False
 
 
 def test_unload_mismatched_heavy_trt_models_when_disabling_and_enabling():

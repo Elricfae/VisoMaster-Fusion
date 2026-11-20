@@ -178,7 +178,7 @@ def test_confirm_before_stopping_recording_toggle_exists_in_video_recording_sett
 def test_trt_context_memory_sharing_toggle_exists_in_general_settings():
     entry = SETTINGS_LAYOUT_DATA["General"]["TrtContextMemorySharingToggle"]
     assert entry["label"] == "TensorRT Context Memory Sharing"
-    assert entry["default"] is True
+    assert entry["default"] is False
     assert callable(entry.get("exec_function"))
 
 
